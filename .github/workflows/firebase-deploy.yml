@@ -17,19 +17,25 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
+          # Jika sudah commit package-lock.json ke repo, aktifkan kembali baris di bawah ini:
+          # cache: 'npm'
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
       - name: TypeScript & Firestore Rules Check
+        env:
+          CI: true
         run: |
           npm run lint
-          npm test
+          npm test -- --watchAll=false || npm test
           npm run rules:lint
 
       - name: Build Production Bundle
         run: npm run build
+        # Jika aplikasi Anda butuh environment variables saat build (misal VITE_API_KEY), tambahkan di sini:
+        # env:
+        #   VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
 
       - name: Deploy Firestore Rules & Firebase Hosting
         uses: w9jds/firebase-action@v15.4.0
