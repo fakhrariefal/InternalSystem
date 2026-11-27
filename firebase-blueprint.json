@@ -1,0 +1,674 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Internal user account and role assignment for RBAC.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 254 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": {
+          "type": "string",
+          "enum": ["Direktur", "Manager", "Purchasing", "Warehouse", "Sales", "Finance", "Viewer", "Angel Investor"]
+        },
+        "department": { "type": "string", "maxLength": 80 },
+        "active": { "type": "boolean" },
+        "photoURL": { "type": "string", "maxLength": 512 },
+        "claimedFromUserId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "role", "active", "createdAt", "updatedAt"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Master vendor / supplier record with legal documents and Admin verification status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "vendorCategory": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "nib": { "type": "string", "maxLength": 40 },
+        "npwp": { "type": "string", "maxLength": 32 },
+        "taxStatus": { "type": "string", "enum": ["PKP", "Non-PKP"] },
+        "address": { "type": "string", "maxLength": 400 },
+        "contactPerson": { "type": "string", "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "email": { "type": "string", "maxLength": 254 },
+        "bankName": { "type": "string", "maxLength": 80 },
+        "bankAccount": { "type": "string", "maxLength": 64 },
+        "paymentScheme": { "type": "string", "enum": ["CBD", "COD", "TOP"] },
+        "paymentTermDays": { "type": "integer" },
+        "defaultCurrency": { "type": "string", "enum": ["IDR", "USD"] },
+        "nibDocUrl": { "type": "string", "maxLength": 300000 },
+        "nibFileName": { "type": "string", "maxLength": 160 },
+        "npwpDocUrl": { "type": "string", "maxLength": 300000 },
+        "npwpFileName": { "type": "string", "maxLength": 160 },
+        "ktpDirectorDocUrl": { "type": "string", "maxLength": 300000 },
+        "ktpDirectorFileName": { "type": "string", "maxLength": 160 },
+        "verificationStatus": { "type": "string", "enum": ["Pending", "Verified", "Blacklisted"] },
+        "verifiedBy": { "type": "string", "maxLength": 128 },
+        "verifiedAt": { "type": "string", "maxLength": 40 },
+        "active": { "type": "boolean" },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "code", "name", "defaultCurrency", "paymentTermDays", "active", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Master B2B buyer / customer record with billing/shipping addresses, PICs, TOP legal docs, and Admin-controlled credit limit.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "nib": { "type": "string", "maxLength": 40 },
+        "npwp": { "type": "string", "maxLength": 32 },
+        "taxStatus": { "type": "string", "enum": ["PKP", "Non-PKP"] },
+        "address": { "type": "string", "maxLength": 400 },
+        "billingAddress": { "type": "string", "maxLength": 400 },
+        "shippingAddress": { "type": "string", "maxLength": 400 },
+        "contactPerson": { "type": "string", "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "email": { "type": "string", "maxLength": 254 },
+        "picPurchasingName": { "type": "string", "maxLength": 120 },
+        "picPurchasingPhone": { "type": "string", "maxLength": 40 },
+        "picWarehouseName": { "type": "string", "maxLength": 120 },
+        "picWarehousePhone": { "type": "string", "maxLength": 40 },
+        "picFinanceName": { "type": "string", "maxLength": 120 },
+        "picFinancePhone": { "type": "string", "maxLength": 40 },
+        "paymentScheme": { "type": "string", "enum": ["CBD", "TOP 14 Hari", "TOP 30 Hari"] },
+        "creditLimit": { "type": "number" },
+        "paymentTermDays": { "type": "integer" },
+        "contractPrices": { "type": "array" },
+        "nibDocUrl": { "type": "string", "maxLength": 300000 },
+        "nibFileName": { "type": "string", "maxLength": 160 },
+        "npwpDocUrl": { "type": "string", "maxLength": 300000 },
+        "npwpFileName": { "type": "string", "maxLength": 160 },
+        "verificationStatus": { "type": "string", "enum": ["Pending", "Verified", "Blacklisted"] },
+        "verifiedBy": { "type": "string", "maxLength": 128 },
+        "verifiedAt": { "type": "string", "maxLength": 40 },
+        "active": { "type": "boolean" },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "code", "name", "creditLimit", "paymentTermDays", "active", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Warehouse": {
+      "title": "Warehouse",
+      "description": "Physical storage location.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 2, "maxLength": 24 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "address": { "type": "string", "maxLength": 300 },
+        "picName": { "type": "string", "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "code", "name", "active", "createdAt", "updatedAt"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Product category classification.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 2, "maxLength": 24 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 240 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "code", "name", "createdAt"]
+    },
+    "Uom": {
+      "title": "Uom",
+      "description": "Unit of measure definition.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 16 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "code", "name", "createdAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Master product catalog item with multi-warehouse stock.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sku": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 180 },
+        "categoryId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "categoryName": { "type": "string", "maxLength": 80 },
+        "uomCode": { "type": "string", "maxLength": 16 },
+        "description": { "type": "string", "maxLength": 600 },
+        "imageUrl": { "type": "string", "maxLength": 1000 },
+        "buyPrice": { "type": "number" },
+        "sellPrice": { "type": "number" },
+        "currency": { "type": "string", "enum": ["IDR", "USD"] },
+        "minStock": { "type": "number" },
+        "maxStock": { "type": "number" },
+        "trackSerialOrExpiry": { "type": "boolean" },
+        "isService": { "type": "boolean" },
+        "warehouseStocks": { "type": "object" },
+        "active": { "type": "boolean" },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "sku", "name", "categoryId", "uomCode", "buyPrice", "sellPrice", "currency", "minStock", "maxStock", "warehouseStocks", "active", "createdBy", "createdAt", "updatedAt"]
+    },
+    "PurchaseOrder": {
+      "title": "PurchaseOrder",
+      "description": "Multi-item purchase order with approval workflow.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "poNumber": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "supplierId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "supplierName": { "type": "string", "maxLength": 160 },
+        "warehouseId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "warehouseName": { "type": "string", "maxLength": 120 },
+        "currency": { "type": "string", "enum": ["IDR", "USD"] },
+        "exchangeRate": { "type": "number" },
+        "status": {
+          "type": "string",
+          "enum": ["Draft", "Submitted", "Approved by Manager", "Ordered", "Partially Received", "Fully Received", "Closed", "Cancelled"]
+        },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "taxAmount": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "expectedDate": { "type": "string", "maxLength": 32 },
+        "notes": { "type": "string", "maxLength": 600 },
+        "attachmentUrls": { "type": "array" },
+        "approvalTierRequired": { "type": "string", "enum": ["Manager", "Direktur"] },
+        "directorApprovedBy": { "type": "string", "maxLength": 128 },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdByName": { "type": "string", "maxLength": 120 },
+        "approvedBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "poNumber", "supplierId", "warehouseId", "currency", "exchangeRate", "status", "items", "totalAmount", "createdBy", "createdAt", "updatedAt"]
+    },
+    "OrderLog": {
+      "title": "OrderLog",
+      "description": "Immutable activity history entry for a purchase order.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "action": { "type": "string", "maxLength": 120 },
+        "actorId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorName": { "type": "string", "maxLength": 120 },
+        "note": { "type": "string", "maxLength": 400 },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "action", "actorId", "actorName", "timestamp"]
+    },
+    "SalesOrder": {
+      "title": "SalesOrder",
+      "description": "Multi-item customer sales order.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "soNumber": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "customerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "customerName": { "type": "string", "maxLength": 160 },
+        "warehouseId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "warehouseName": { "type": "string", "maxLength": 120 },
+        "currency": { "type": "string", "enum": ["IDR", "USD"] },
+        "status": {
+          "type": "string",
+          "enum": ["Draft", "Confirmed", "Partially Delivered", "Fully Delivered", "Invoiced", "Closed"]
+        },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "taxAmount": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "dueDate": { "type": "string", "maxLength": 32 },
+        "invoiceNumber": { "type": "string", "maxLength": 48 },
+        "taxInvoiceNumber": { "type": "string", "maxLength": 48 },
+        "quotationId": { "type": "string", "maxLength": 128 },
+        "quotationNumber": { "type": "string", "maxLength": 48 },
+        "podImageUrl": { "type": "string", "maxLength": 300000 },
+        "podFileName": { "type": "string", "maxLength": 160 },
+        "podReceiverName": { "type": "string", "maxLength": 120 },
+        "podTimestamp": { "type": "string", "maxLength": 40 },
+        "notes": { "type": "string", "maxLength": 600 },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdByName": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "soNumber", "customerId", "warehouseId", "currency", "status", "items", "totalAmount", "createdBy", "createdAt", "updatedAt"]
+    },
+    "StockMovement": {
+      "title": "StockMovement",
+      "description": "Immutable inventory ledger movement (Goods Receipt, Goods Issue, Transfer, Stock Opname).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "movementNumber": { "type": "string", "maxLength": 40 },
+        "type": { "type": "string", "enum": ["GOODS_RECEIPT", "GOODS_ISSUE", "TRANSFER", "STOCK_OPNAME"] },
+        "referenceType": { "type": "string", "maxLength": 32 },
+        "referenceId": { "type": "string", "maxLength": 128 },
+        "referenceNumber": { "type": "string", "maxLength": 48 },
+        "productId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productSku": { "type": "string", "maxLength": 40 },
+        "productName": { "type": "string", "maxLength": 180 },
+        "warehouseId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "warehouseName": { "type": "string", "maxLength": 120 },
+        "targetWarehouseId": { "type": "string", "maxLength": 128 },
+        "targetWarehouseName": { "type": "string", "maxLength": 120 },
+        "quantityDelta": { "type": "number" },
+        "beforeQty": { "type": "number" },
+        "afterQty": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 400 },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdByName": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "movementNumber", "type", "productId", "warehouseId", "quantityDelta", "beforeQty", "afterQty", "createdBy", "createdAt"]
+    },
+    "AccountingInvoice": {
+      "title": "AccountingInvoice",
+      "description": "Accounts Payable (AP) or Accounts Receivable (AR) invoice record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "invoiceNumber": { "type": "string", "maxLength": 48 },
+        "ledgerType": { "type": "string", "enum": ["AP", "AR"] },
+        "counterpartyId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "counterpartyName": { "type": "string", "maxLength": 160 },
+        "referenceOrderId": { "type": "string", "maxLength": 128 },
+        "referenceOrderNumber": { "type": "string", "maxLength": 48 },
+        "taxInvoiceNumber": { "type": "string", "maxLength": 48 },
+        "currency": { "type": "string", "enum": ["IDR", "USD"] },
+        "exchangeRate": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "balanceDue": { "type": "number" },
+        "status": { "type": "string", "enum": ["UNPAID", "PARTIAL", "PAID", "OVERDUE"] },
+        "issueDate": { "type": "string", "maxLength": 32 },
+        "dueDate": { "type": "string", "maxLength": 32 },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "invoiceNumber", "ledgerType", "counterpartyId", "currency", "totalAmount", "paidAmount", "balanceDue", "status", "dueDate", "createdBy", "createdAt", "updatedAt"]
+    },
+    "InvoicePayment": {
+      "title": "InvoicePayment",
+      "description": "Partial or full payment record under an invoice.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string", "enum": ["IDR", "USD"] },
+        "exchangeRate": { "type": "number" },
+        "paymentMethod": { "type": "string", "maxLength": 120 },
+        "referenceNo": { "type": "string", "maxLength": 80 },
+        "notes": { "type": "string", "maxLength": 300 },
+        "recordedBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recordedByName": { "type": "string", "maxLength": 120 },
+        "paidAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "amount", "currency", "paymentMethod", "recordedBy", "paidAt"]
+    },
+    "ChartAccount": {
+      "title": "ChartAccount",
+      "description": "General Ledger Chart of Accounts (Daftar Akun).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 2, "maxLength": 24 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "category": { "type": "string", "enum": ["Aset", "Kewajiban", "Ekuitas", "Pendapatan", "Beban"] },
+        "normalBalance": { "type": "string", "enum": ["Debit", "Kredit"] },
+        "openingBalanceIdr": { "type": "number" },
+        "description": { "type": "string", "maxLength": 400 },
+        "active": { "type": "boolean" },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "code", "name", "category", "normalBalance", "openingBalanceIdr", "active", "createdBy", "createdAt", "updatedAt"]
+    },
+    "JournalEntry": {
+      "title": "JournalEntry",
+      "description": "Double-entry General Ledger journal voucher.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "entryNumber": { "type": "string", "minLength": 4, "maxLength": 48 },
+        "entryDate": { "type": "string", "maxLength": 32 },
+        "journalType": { "type": "string", "enum": ["Jurnal Umum", "Pembelian (AP)", "Penjualan (AR)", "Kas & Bank", "Penyesuaian"] },
+        "referenceType": { "type": "string", "maxLength": 32 },
+        "referenceId": { "type": "string", "maxLength": 128 },
+        "referenceNumber": { "type": "string", "maxLength": 48 },
+        "description": { "type": "string", "minLength": 2, "maxLength": 400 },
+        "lines": { "type": "array" },
+        "totalDebitIdr": { "type": "number" },
+        "totalCreditIdr": { "type": "number" },
+        "status": { "type": "string", "enum": ["Posted", "Void"] },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdByName": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "entryNumber", "entryDate", "journalType", "description", "lines", "totalDebitIdr", "totalCreditIdr", "status", "createdBy", "createdAt", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "System audit trail entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "module": { "type": "string", "maxLength": 48 },
+        "action": { "type": "string", "maxLength": 120 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "targetLabel": { "type": "string", "maxLength": 160 },
+        "actorId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorEmail": { "type": "string", "maxLength": 254 },
+        "actorRole": { "type": "string", "maxLength": 40 },
+        "details": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "module", "action", "actorId", "actorRole", "createdAt"]
+    },
+    "AppNotification": {
+      "title": "AppNotification",
+      "description": "In-app operational notification.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "maxLength": 140 },
+        "message": { "type": "string", "maxLength": 400 },
+        "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+        "targetRoles": { "type": "array" },
+        "readBy": { "type": "array" },
+        "linkModule": { "type": "string", "maxLength": 48 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "message", "severity", "createdAt"]
+    },
+    "CompanySettings": {
+      "title": "CompanySettings",
+      "description": "Corporate configuration and default financial parameters.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "companyName": { "type": "string", "maxLength": 160 },
+        "tagline": { "type": "string", "maxLength": 200 },
+        "npwp": { "type": "string", "maxLength": 40 },
+        "address": { "type": "string", "maxLength": 400 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "email": { "type": "string", "maxLength": 254 },
+        "logoUrl": { "type": "string", "maxLength": 1000 },
+        "bankName": { "type": "string", "maxLength": 120 },
+        "bankAccountNumber": { "type": "string", "maxLength": 64 },
+        "bankAccountHolder": { "type": "string", "maxLength": 160 },
+        "managerApprovalLimitIdr": { "type": "number" },
+        "defaultExchangeRateUsdIdr": { "type": "number" },
+        "taxRatePercent": { "type": "number" },
+        "isPkp": { "type": "boolean" },
+        "supplierCategories": { "type": "array" },
+        "initialSeedCompleted": { "type": "boolean" },
+        "updatedBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyName", "defaultExchangeRateUsdIdr", "taxRatePercent", "updatedBy", "updatedAt"]
+    },
+    "SalesQuotation": {
+      "title": "SalesQuotation",
+      "description": "Pre-sales customer quotation with contract price support and SO conversion.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "quotationNumber": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "customerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "customerName": { "type": "string", "maxLength": 160 },
+        "warehouseId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "warehouseName": { "type": "string", "maxLength": 120 },
+        "currency": { "type": "string", "enum": ["IDR", "USD"] },
+        "status": { "type": "string", "enum": ["Draft", "Sent", "Accepted", "Rejected", "Expired", "Converted"] },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "taxAmount": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "validUntil": { "type": "string", "maxLength": 32 },
+        "notes": { "type": "string", "maxLength": 600 },
+        "convertedSoId": { "type": "string", "maxLength": 128 },
+        "convertedSoNumber": { "type": "string", "maxLength": 40 },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdByName": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "quotationNumber", "customerId", "warehouseId", "currency", "status", "items", "subtotal", "taxAmount", "totalAmount", "validUntil", "createdBy", "createdAt", "updatedAt"]
+    },
+    "VendorRfq": {
+      "title": "VendorRfq",
+      "description": "Request for Quotation across multiple invited suppliers with price comparison and PO award.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "rfqNumber": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "warehouseId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "warehouseName": { "type": "string", "maxLength": 120 },
+        "deadlineDate": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "enum": ["Draft", "Open", "Awarded", "Cancelled"] },
+        "items": { "type": "array" },
+        "invitedSupplierIds": { "type": "array" },
+        "quotes": { "type": "array" },
+        "awardedSupplierId": { "type": "string", "maxLength": 128 },
+        "awardedPoId": { "type": "string", "maxLength": 128 },
+        "awardedPoNumber": { "type": "string", "maxLength": 40 },
+        "notes": { "type": "string", "maxLength": 600 },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdByName": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "rfqNumber", "title", "warehouseId", "deadlineDate", "status", "items", "invitedSupplierIds", "quotes", "createdBy", "createdAt", "updatedAt"]
+    },
+    "GoodsReturn": {
+      "title": "GoodsReturn",
+      "description": "Purchase return (Debit Note) or Sales return (Credit Note) with inventory and GL reversal.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "returnNumber": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "returnType": { "type": "string", "enum": ["PURCHASE_RETURN", "SALES_RETURN"] },
+        "status": { "type": "string", "enum": ["Pending", "Completed", "Cancelled"] },
+        "referenceOrderId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "referenceOrderNumber": { "type": "string", "maxLength": 48 },
+        "counterpartyId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "counterpartyName": { "type": "string", "maxLength": 160 },
+        "warehouseId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "warehouseName": { "type": "string", "maxLength": 120 },
+        "currency": { "type": "string", "enum": ["IDR", "USD"] },
+        "returnDate": { "type": "string", "maxLength": 32 },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "taxAmount": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "reason": { "type": "string", "minLength": 2, "maxLength": 400 },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdByName": { "type": "string", "maxLength": 120 },
+        "completedBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "returnNumber", "returnType", "status", "referenceOrderId", "referenceOrderNumber", "counterpartyId", "counterpartyName", "warehouseId", "currency", "returnDate", "items", "subtotal", "taxAmount", "totalAmount", "reason", "createdBy", "createdAt", "updatedAt"]
+    },
+    "InventoryBatch": {
+      "title": "InventoryBatch",
+      "description": "Batch, lot, serial number, warranty, and expiry date tracking per warehouse.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productSku": { "type": "string", "maxLength": 40 },
+        "productName": { "type": "string", "maxLength": 180 },
+        "warehouseId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "warehouseName": { "type": "string", "maxLength": 120 },
+        "batchNumber": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "serialNumber": { "type": "string", "maxLength": 80 },
+        "qty": { "type": "number" },
+        "warrantyUntil": { "type": "string", "maxLength": 32 },
+        "expiryDate": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "enum": ["Active", "Quarantine", "Expired", "Depleted"] },
+        "notes": { "type": "string", "maxLength": 400 },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "productId", "warehouseId", "batchNumber", "qty", "status", "createdBy", "createdAt", "updatedAt"]
+    },
+    "AccountingPeriodLock": {
+      "title": "AccountingPeriodLock",
+      "description": "Monthly accounting period close lock preventing backdated modifications.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "periodKey": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^\\d{4}-\\d{2}$" },
+        "locked": { "type": "boolean" },
+        "notes": { "type": "string", "maxLength": 400 },
+        "lockedBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "lockedByName": { "type": "string", "maxLength": 120 },
+        "lockedAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "periodKey", "locked", "lockedBy", "lockedAt", "updatedAt"]
+    },
+    "MonthlyBudget": {
+      "title": "MonthlyBudget",
+      "description": "Monthly revenue target and COGS/OPEX budget limits for executive variance tracking.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "periodKey": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^\\d{4}-\\d{2}$" },
+        "targetRevenueIdr": { "type": "number" },
+        "maxCogsIdr": { "type": "number" },
+        "maxOpexIdr": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 400 },
+        "updatedBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "periodKey", "targetRevenueIdr", "maxCogsIdr", "maxOpexIdr", "updatedBy", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profiles and RBAC role assignments."
+    },
+    "/suppliers/{supplierId}": {
+      "schema": { "$ref": "#/entities/Supplier" },
+      "description": "Master suppliers."
+    },
+    "/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Master customers."
+    },
+    "/warehouses/{warehouseId}": {
+      "schema": { "$ref": "#/entities/Warehouse" },
+      "description": "Multi-location warehouses."
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Product categories."
+    },
+    "/uoms/{uomId}": {
+      "schema": { "$ref": "#/entities/Uom" },
+      "description": "Units of measure."
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Products catalog and per-warehouse stock."
+    },
+    "/purchaseOrders/{poId}": {
+      "schema": { "$ref": "#/entities/PurchaseOrder" },
+      "description": "Purchase orders and approval workflow."
+    },
+    "/purchaseOrders/{poId}/logs/{logId}": {
+      "schema": { "$ref": "#/entities/OrderLog" },
+      "description": "Audit log entries for a specific purchase order."
+    },
+    "/salesOrders/{soId}": {
+      "schema": { "$ref": "#/entities/SalesOrder" },
+      "description": "Customer sales orders."
+    },
+    "/stockMovements/{movementId}": {
+      "schema": { "$ref": "#/entities/StockMovement" },
+      "description": "Immutable inventory movements ledger."
+    },
+    "/invoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/AccountingInvoice" },
+      "description": "Accounts Payable and Accounts Receivable invoices."
+    },
+    "/invoices/{invoiceId}/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/InvoicePayment" },
+      "description": "Payments recorded against an invoice."
+    },
+    "/chartOfAccounts/{accountId}": {
+      "schema": { "$ref": "#/entities/ChartAccount" },
+      "description": "General Ledger chart of accounts."
+    },
+    "/journalEntries/{entryId}": {
+      "schema": { "$ref": "#/entities/JournalEntry" },
+      "description": "Double-entry General Ledger journal entries."
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Global immutable system audit logs."
+    },
+    "/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/AppNotification" },
+      "description": "In-app notifications."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/CompanySettings" },
+      "description": "Company settings document."
+    },
+    "/salesQuotations/{quotationId}": {
+      "schema": { "$ref": "#/entities/SalesQuotation" },
+      "description": "Customer sales quotations."
+    },
+    "/vendorRfqs/{rfqId}": {
+      "schema": { "$ref": "#/entities/VendorRfq" },
+      "description": "Multi-vendor Requests for Quotation."
+    },
+    "/goodsReturns/{returnId}": {
+      "schema": { "$ref": "#/entities/GoodsReturn" },
+      "description": "Purchase and sales return documents."
+    },
+    "/inventoryBatches/{batchId}": {
+      "schema": { "$ref": "#/entities/InventoryBatch" },
+      "description": "Product batch, serial, warranty, and expiry records."
+    },
+    "/periodClosings/{periodId}": {
+      "schema": { "$ref": "#/entities/AccountingPeriodLock" },
+      "description": "Monthly accounting period closing locks."
+    },
+    "/budgets/{budgetId}": {
+      "schema": { "$ref": "#/entities/MonthlyBudget" },
+      "description": "Monthly financial budget targets."
+    }
+  }
+}

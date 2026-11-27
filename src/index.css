@@ -1,0 +1,608 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: 'Plus Jakarta Sans', system-ui, sans-serif;
+    --font-sans: 'DM Sans', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    --brand-navy: #0B1B3A;
+    --brand-navy-soft: #13284F;
+    --brand-blue: #1B5E99;
+    --brand-blue-hover: #154C7E;
+    --brand-gold: #D9AA32;
+    --brand-gold-deep: #B88918;
+    --brand-gold-soft: #FDF7E3;
+    --surface-canvas: #F4F7FB;
+    --surface-card: #FFFFFF;
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--surface-canvas);
+    color: var(--brand-navy);
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    text-wrap: balance;
+  }
+
+  ::selection {
+    background-color: rgba(27, 94, 153, 0.16);
+    color: #0B1B3A;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================================
+   UNIFIED CORPORATE CSS PRINT LAYOUT (Invoices, Quotations, POs, SOs, DOs, Reg)
+   ============================================================================ */
+.print-doc-portal {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background-color: rgba(11, 27, 58, 0.72);
+  backdrop-filter: blur(4px);
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.print-doc-toolbar {
+  width: 100%;
+  max-width: 210mm;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  background-color: #0b1b3a;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.22);
+}
+
+.print-doc-sheet {
+  --print-font-brand: 16px;
+  --print-font-doc-title: 12.5px;
+  --print-font-body: 11px;
+  --print-font-table: 10.5px;
+  --print-font-total: 12px;
+  --print-font-small: 9.5px;
+
+  width: 210mm;
+  max-width: 100%;
+  min-height: 297mm;
+  margin: 0 auto 24px;
+  padding: 12mm 14mm;
+  background-color: #ffffff;
+  color: #0f172a;
+  font-family: var(--font-sans);
+  font-size: var(--print-font-body);
+  line-height: 1.42;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  border-radius: 4px;
+  box-shadow: 0 18px 42px rgba(11, 27, 58, 0.35);
+  overflow: visible;
+}
+
+.print-doc-banner {
+  background-color: #0b1b3a;
+  color: #ffffff;
+  padding: 12px 16px;
+  border-bottom: 3px solid #d9aa32;
+  border-radius: 4px 4px 0 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.print-doc-brand-name {
+  font-family: var(--font-display);
+  font-size: var(--print-font-brand);
+  font-weight: 700;
+  line-height: 1.25;
+  color: #ffffff;
+}
+
+.print-doc-brand-meta {
+  font-size: var(--print-font-small);
+  color: #e2e8f0;
+  line-height: 1.45;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.print-doc-banner-badge {
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.print-doc-banner-kicker {
+  font-size: var(--print-font-small);
+  font-weight: 700;
+  color: #f5c85a;
+  letter-spacing: 0.04em;
+}
+
+.print-doc-banner-date {
+  font-size: var(--print-font-small);
+  color: #cbd5e1;
+  margin-top: 2px;
+}
+
+.print-doc-title-strip {
+  margin-top: 10px;
+  padding: 8px 12px;
+  background-color: #f4f7fb;
+  border: 1px solid #d8e2ef;
+  border-radius: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.print-doc-title-text {
+  font-family: var(--font-display);
+  font-size: var(--print-font-doc-title);
+  font-weight: 700;
+  color: #0b1b3a;
+  letter-spacing: 0.02em;
+}
+
+.print-doc-number-badge {
+  font-family: var(--font-mono);
+  font-size: var(--print-font-body);
+  font-weight: 700;
+  color: #1b5e99;
+}
+
+.print-doc-meta-grid {
+  margin-top: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e2e8f0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 22px;
+}
+
+.print-doc-meta-col {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.print-doc-meta-row {
+  display: grid;
+  grid-template-columns: 112px 10px minmax(0, 1fr);
+  gap: 4px;
+  align-items: start;
+  font-size: var(--print-font-body);
+  line-height: 1.4;
+}
+
+.print-doc-meta-label {
+  color: #475569;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.print-doc-colon {
+  text-align: center;
+  font-weight: 700;
+  color: #64748b;
+  user-select: none;
+}
+
+.print-doc-meta-value {
+  color: #0f172a;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.print-doc-table-wrap {
+  margin-top: 12px;
+  width: 100%;
+  overflow: visible;
+}
+
+.print-doc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--print-font-table);
+  table-layout: auto;
+}
+
+.print-doc-table thead th {
+  background-color: #0b1b3a;
+  color: #ffffff;
+  font-weight: 600;
+  padding: 7px 8px;
+  border: 1px solid #0b1b3a;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.print-doc-table tbody td {
+  padding: 6px 8px;
+  border: 1px solid #e2e8f0;
+  color: #0f172a;
+  vertical-align: top;
+  overflow-wrap: break-word;
+  word-break: normal;
+  white-space: normal;
+}
+
+.print-doc-table tbody tr:nth-child(even) td {
+  background-color: #f4f7fb;
+}
+
+.print-doc-summary-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 14px;
+  align-items: start;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.print-doc-notes-box,
+.print-doc-bank-box {
+  background-color: #f4f7fb;
+  border: 1px solid #d8e2ef;
+  border-radius: 4px;
+  padding: 10px 12px;
+  font-size: var(--print-font-body);
+}
+
+.print-doc-notes-title {
+  font-weight: 700;
+  font-size: var(--print-font-small);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #475569;
+  margin-bottom: 4px;
+}
+
+.print-doc-notes-text {
+  color: #0f172a;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.print-doc-kv-row {
+  display: grid;
+  grid-template-columns: 64px 10px minmax(0, 1fr);
+  gap: 4px;
+  align-items: start;
+  margin-top: 3px;
+}
+
+.print-doc-totals-box {
+  background-color: #f4f7fb;
+  border: 1px solid #d8e2ef;
+  border-radius: 4px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.print-doc-total-row {
+  display: grid;
+  grid-template-columns: 112px 10px minmax(0, 1fr);
+  gap: 4px;
+  align-items: baseline;
+  font-size: var(--print-font-body);
+}
+
+.print-doc-total-row--grand {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid #cbd5e1;
+  font-size: var(--print-font-total);
+  font-weight: 700;
+  color: #0b1b3a;
+}
+
+.print-doc-total-val {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.print-doc-status-banner {
+  margin-top: 12px;
+  padding: 9px 12px;
+  border-radius: 4px;
+  font-size: var(--print-font-body);
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.print-doc-status-banner--success {
+  background-color: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+}
+
+.print-doc-status-banner--info {
+  background-color: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e3a8a;
+}
+
+.print-doc-signatures {
+  margin-top: 20px;
+  display: grid;
+  gap: 24px;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.print-doc-signatures--single {
+  grid-template-columns: minmax(190px, 240px) !important;
+  justify-content: end;
+}
+
+.print-doc-sig-slot {
+  font-size: var(--print-font-table);
+  color: #475569;
+  min-width: 0;
+}
+
+.print-doc-sig-line {
+  margin-top: 44px;
+  padding-top: 5px;
+  border-top: 1px solid #94a3b8;
+  font-weight: 700;
+  color: #0f172a;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.print-doc-bottom-dock {
+  margin-top: auto;
+  padding-top: 18px;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.print-doc-qr-box {
+  background-color: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.print-doc-qr-img {
+  width: 60px;
+  height: 60px;
+  flex-shrink: 0;
+  object-fit: contain;
+  background-color: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 3px;
+}
+
+.print-doc-qr-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.print-doc-qr-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: #0b1b3a;
+  letter-spacing: 0.02em;
+}
+
+.print-doc-qr-code-row {
+  display: grid;
+  grid-template-columns: 80px 10px minmax(0, 1fr);
+  gap: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #1b5e99;
+  margin-top: 2px;
+}
+
+.print-doc-qr-detail {
+  font-size: var(--print-font-small);
+  color: #475569;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.print-doc-footer {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid #cbd5e1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--print-font-small);
+  color: #64748b;
+}
+
+@media screen and (max-width: 767px) {
+  .print-doc-portal {
+    padding: 8px;
+  }
+  .print-doc-sheet {
+    width: 100%;
+    min-height: auto;
+    padding: 14px;
+  }
+  .print-doc-banner {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .print-doc-banner-badge {
+    text-align: left;
+  }
+  .print-doc-meta-grid,
+  .print-doc-summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .print-doc-meta-row {
+    grid-template-columns: 98px 10px minmax(0, 1fr);
+  }
+  .print-doc-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .print-doc-table {
+    min-width: 560px;
+  }
+  .print-doc-signatures {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 16px;
+  }
+  .print-doc-signatures--single {
+    grid-template-columns: minmax(180px, 230px) !important;
+    justify-content: end;
+  }
+  .print-doc-sig-line {
+    margin-top: 28px;
+  }
+}
+
+@page {
+  size: A4 portrait;
+  margin: 10mm 12mm;
+}
+
+@media print {
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  body:not(.printing-document-modal) aside,
+  body:not(.printing-document-modal) header,
+  body:not(.printing-document-modal) nav,
+  .no-print {
+    display: none !important;
+  }
+
+  body.printing-document-modal #root {
+    display: none !important;
+  }
+
+  body.printing-document-modal .print-doc-portal {
+    position: static !important;
+    inset: auto !important;
+    display: block !important;
+    background: #ffffff !important;
+    backdrop-filter: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+  }
+
+  body.printing-document-modal .print-doc-banner {
+    display: flex !important;
+    flex-direction: row !important;
+  }
+
+  body.printing-document-modal .print-doc-sheet {
+    width: 100% !important;
+    max-width: none !important;
+    min-height: 277mm !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+
+  body.printing-document-modal .print-doc-meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  body.printing-document-modal .print-doc-summary-grid {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr) !important;
+  }
+
+  body.printing-document-modal .print-doc-table-wrap {
+    overflow: visible !important;
+  }
+
+  body.printing-document-modal .print-doc-table {
+    min-width: 0 !important;
+  }
+
+  body.printing-document-modal .print-doc-bottom-dock {
+    margin-top: auto !important;
+    padding-top: 14px !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .print-doc-table thead {
+    display: table-header-group;
+  }
+
+  .print-doc-table tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  main {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+}
+

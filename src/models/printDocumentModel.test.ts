@@ -1,0 +1,88 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  buildBuyerRegistrationPrintDoc,
+  buildPaymentReceiptPrintDoc,
+  buildPurchaseOrderPrintDoc,
+  buildSalesInvoicePrintDoc,
+  buildSalesOrderPrintDoc,
+  buildSalesQuotationPrintDoc,
+  buildSupplierRegistrationPrintDoc,
+  buildSuratJalanPrintDoc,
+} from './printDocumentModel';
+import { createInitialSeedState } from './seedData';
+
+test('Unified print model generates aligned metadata, totals, full notes, and bottom QR payloads for Invoices, Quotations, and POs', () => {
+  const seed = createInitialSeedState();
+  const po = seed.purchaseOrders[0];
+  const qt = seed.salesQuotations[0];
+  const arInv = seed.invoices.find((i) => i.ledgerType === 'AR');
+  const apInv = seed.invoices.find((i) => i.ledgerType === 'AP');
+  assert.ok(po && qt && arInv && apInv);
+
+  const poSupplier = seed.suppliers.find((s) => s.id === po.supplierId);
+  const poDoc = buildPurchaseOrderPrintDoc(po, seed.settings, poSupplier);
+  assert.equal(poDoc.docType, 'PURCHASE_ORDER');
+  assert.equal(poDoc.documentNumber, po.poNumber);
+  assert.equal(poDoc.leftMeta.length, 4);
+  assert.equal(poDoc.rightMeta.length, 4);
+  assert.equal(poDoc.totals?.length, 3);
+  assert.equal(poDoc.qrVerification.code, po.poNumber);
+  assert.ok(poDoc.qrVerification.payload.startsWith('DHI-PO|'));
+
+  const qtCustomer = seed.customers.find((c) => c.id === qt.customerId);
+  const qtWh = seed.warehouses.find((w) => w.id === qt.warehouseId);
+  const qtLongNotes = { ...qt, notes: 'Baris 1\nBaris 2\nBaris 3\nBaris 4\nBaris 5 Syarat Pengiriman Lengkap' };
+  const qtDoc = buildSalesQuotationPrintDoc(qtLongNotes, seed.settings, qtCustomer, qtWh);
+  assert.equal(qtDoc.docType, 'QUOTATION');
+  assert.equal(qtDoc.totals?.[2]?.label, 'Total Penawaran');
+  assert.equal(qtDoc.totals?.[2]?.isGrandTotal, true);
+  assert.ok(qtDoc.notesText?.includes('Baris 5 Syarat Pengiriman Lengkap'));
+  assert.equal(qtDoc.qrVerification.code, qt.quotationNumber);
+
+  const invCustomer = seed.customers.find((c) => c.id === arInv.counterpartyId);
+  const invSo = seed.salesOrders.find((s) => s.soNumber === arInv.referenceOrderNumber);
+  const arDoc = buildSalesInvoicePrintDoc(arInv, seed.settings, invCustomer, invSo);
+  assert.equal(arDoc.docType, 'INVOICE');
+  assert.ok(arDoc.bankInfo);
+  assert.equal(arDoc.bankInfo.rows.length, 2);
+  assert.equal(arDoc.totals?.length, 5);
+  assert.equal(arDoc.qrVerification.code, arInv.invoiceNumber);
+
+  const apSupplier = seed.suppliers.find((s) => s.id === apInv.counterpartyId);
+  const apDoc = buildSalesInvoicePrintDoc(apInv, seed.settings, undefined, undefined, apSupplier);
+  assert.equal(apDoc.docType, 'INVOICE');
+  assert.ok(apDoc.documentTitle.includes('AP INVOICE'));
+  assert.equal(apDoc.qrVerification.code, apInv.invoiceNumber);
+});
+
+test('Unified print model generates SO, Surat Jalan, Kwitansi, and Verified Partner Registration documents cleanly', () => {
+  const seed = createInitialSeedState();
+  const so = seed.salesOrders[0];
+  const customer = seed.customers.find((c) => c.id === so.customerId);
+  const wh = seed.warehouses.find((w) => w.id === so.warehouseId);
+  const supplier = seed.suppliers[0];
+  const paidInv = seed.invoices.find((i) => (i.payments || []).length > 0);
+  const firstPayment = paidInv?.payments?.[0];
+  assert.ok(so && customer && wh && supplier && paidInv && firstPayment);
+
+  const soDoc = buildSalesOrderPrintDoc(so, seed.settings, customer, wh);
+  assert.equal(soDoc.docType, 'SALES_ORDER');
+  assert.equal(soDoc.rows.length, so.items.length);
+
+  const sjDoc = buildSuratJalanPrintDoc(so, seed.settings, customer, wh);
+  assert.equal(sjDoc.docType, 'SURAT_JALAN');
+  assert.ok(sjDoc.documentNumber.startsWith('SJ-'));
+
+  const kwtDoc = buildPaymentReceiptPrintDoc(paidInv, firstPayment, seed.settings);
+  assert.equal(kwtDoc.docType, 'KWITANSI');
+  assert.ok(kwtDoc.statusBanner);
+
+  const supReg = buildSupplierRegistrationPrintDoc(supplier, seed.settings);
+  assert.equal(supReg.docType, 'REG_SUPPLIER');
+  assert.ok(supReg.qrVerification.payload.startsWith('DHI-REG-SUP|'));
+
+  const buyReg = buildBuyerRegistrationPrintDoc(customer, seed.settings);
+  assert.equal(buyReg.docType, 'REG_BUYER');
+  assert.ok(buyReg.qrVerification.payload.startsWith('DHI-REG-BUY|'));
+});

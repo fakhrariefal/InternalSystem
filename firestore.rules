@@ -1,0 +1,1220 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Global Helpers & Role Primitives
+    // =========================================================================
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email is string && request.auth.token.email.lower() == 'fakhrariefal@domestiqhub.com';
+    }
+
+    function hasUserProfile() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isActiveUser() {
+      return isVerified() && (
+        isBootstrappedAdmin() ||
+        (hasUserProfile() && getUserProfile().active == true)
+      );
+    }
+
+    function currentRole() {
+      return isBootstrappedAdmin()
+        ? 'Direktur'
+        : (hasUserProfile()
+          ? (getUserProfile().role == 'Super Admin'
+            ? 'Direktur'
+            : (getUserProfile().role == 'Anggel Investor' ? 'Angel Investor' : getUserProfile().role))
+          : 'Viewer');
+    }
+
+    function isDirektur() {
+      return isVerified() && (
+        isBootstrappedAdmin() ||
+        (hasUserProfile() && getUserProfile().active == true && getUserProfile().role in ['Direktur', 'Super Admin'])
+      );
+    }
+
+    function hasRole(allowedRoles) {
+      return isActiveUser() && (currentRole() in allowedRoles);
+    }
+
+    function isValidRole(role) {
+      return role in ['Direktur', 'Manager', 'Purchasing', 'Warehouse', 'Sales', 'Finance', 'Viewer', 'Angel Investor'];
+    }
+
+    function isValidCurrency(curr) {
+      return curr in ['IDR', 'USD'];
+    }
+
+    // =========================================================================
+    // Entity Validation Blueprints
+    // =========================================================================
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'department', 'active', 'photoURL', 'claimedFromUserId', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && isValidRole(data.role)
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && data.active is bool
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 512))
+        && (!('claimedFromUserId' in data) || isValidId(data.claimedFromUserId))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSupplier(data) {
+      return data.keys().hasAll(['id', 'code', 'name', 'defaultCurrency', 'paymentTermDays', 'active', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'code', 'name', 'vendorCategory', 'nib', 'npwp', 'taxStatus', 'address',
+          'contactPerson', 'phone', 'email', 'bankName', 'bankAccount', 'paymentScheme',
+          'paymentTermDays', 'defaultCurrency', 'nibDocUrl', 'nibFileName', 'npwpDocUrl',
+          'npwpFileName', 'ktpDirectorDocUrl', 'ktpDirectorFileName', 'verificationStatus',
+          'verifiedBy', 'verifiedAt', 'active', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.code is string && data.code.size() >= 2 && data.code.size() <= 32
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 160
+        && (!('vendorCategory' in data) || (data.vendorCategory is string && data.vendorCategory.size() >= 1 && data.vendorCategory.size() <= 80))
+        && (!('nib' in data) || (data.nib is string && data.nib.size() <= 40))
+        && (!('npwp' in data) || (data.npwp is string && data.npwp.size() <= 32))
+        && (!('taxStatus' in data) || data.taxStatus in ['PKP', 'Non-PKP'])
+        && (!('address' in data) || (data.address is string && data.address.size() <= 400))
+        && (!('contactPerson' in data) || (data.contactPerson is string && data.contactPerson.size() <= 120))
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 40))
+        && (!('email' in data) || (data.email is string && data.email.size() <= 254))
+        && (!('bankName' in data) || (data.bankName is string && data.bankName.size() <= 80))
+        && (!('bankAccount' in data) || (data.bankAccount is string && data.bankAccount.size() <= 64))
+        && (!('paymentScheme' in data) || data.paymentScheme in ['CBD', 'COD', 'TOP'])
+        && data.paymentTermDays is int && data.paymentTermDays >= 0 && data.paymentTermDays <= 365
+        && isValidCurrency(data.defaultCurrency)
+        && (!('nibDocUrl' in data) || (data.nibDocUrl is string && data.nibDocUrl.size() <= 300000))
+        && (!('nibFileName' in data) || (data.nibFileName is string && data.nibFileName.size() <= 160))
+        && (!('npwpDocUrl' in data) || (data.npwpDocUrl is string && data.npwpDocUrl.size() <= 300000))
+        && (!('npwpFileName' in data) || (data.npwpFileName is string && data.npwpFileName.size() <= 160))
+        && (!('ktpDirectorDocUrl' in data) || (data.ktpDirectorDocUrl is string && data.ktpDirectorDocUrl.size() <= 300000))
+        && (!('ktpDirectorFileName' in data) || (data.ktpDirectorFileName is string && data.ktpDirectorFileName.size() <= 160))
+        && (!('verificationStatus' in data) || data.verificationStatus in ['Pending', 'Verified', 'Blacklisted'])
+        && (!('verifiedBy' in data) || (data.verifiedBy is string && data.verifiedBy.size() <= 128))
+        && (!('verifiedAt' in data) || (data.verifiedAt is string && data.verifiedAt.size() <= 40))
+        && data.active is bool
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll(['id', 'code', 'name', 'creditLimit', 'paymentTermDays', 'active', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'code', 'name', 'nib', 'npwp', 'taxStatus', 'address', 'billingAddress',
+          'shippingAddress', 'contactPerson', 'phone', 'email', 'picPurchasingName',
+          'picPurchasingPhone', 'picWarehouseName', 'picWarehousePhone', 'picFinanceName',
+          'picFinancePhone', 'paymentScheme', 'creditLimit', 'paymentTermDays', 'contractPrices',
+          'nibDocUrl', 'nibFileName', 'npwpDocUrl', 'npwpFileName', 'verificationStatus',
+          'verifiedBy', 'verifiedAt', 'active', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.code is string && data.code.size() >= 2 && data.code.size() <= 32
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 160
+        && (!('nib' in data) || (data.nib is string && data.nib.size() <= 40))
+        && (!('npwp' in data) || (data.npwp is string && data.npwp.size() <= 32))
+        && (!('taxStatus' in data) || data.taxStatus in ['PKP', 'Non-PKP'])
+        && (!('address' in data) || (data.address is string && data.address.size() <= 400))
+        && (!('billingAddress' in data) || (data.billingAddress is string && data.billingAddress.size() <= 400))
+        && (!('shippingAddress' in data) || (data.shippingAddress is string && data.shippingAddress.size() <= 400))
+        && (!('contactPerson' in data) || (data.contactPerson is string && data.contactPerson.size() <= 120))
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 40))
+        && (!('email' in data) || (data.email is string && data.email.size() <= 254))
+        && (!('picPurchasingName' in data) || (data.picPurchasingName is string && data.picPurchasingName.size() <= 120))
+        && (!('picPurchasingPhone' in data) || (data.picPurchasingPhone is string && data.picPurchasingPhone.size() <= 40))
+        && (!('picWarehouseName' in data) || (data.picWarehouseName is string && data.picWarehouseName.size() <= 120))
+        && (!('picWarehousePhone' in data) || (data.picWarehousePhone is string && data.picWarehousePhone.size() <= 40))
+        && (!('picFinanceName' in data) || (data.picFinanceName is string && data.picFinanceName.size() <= 120))
+        && (!('picFinancePhone' in data) || (data.picFinancePhone is string && data.picFinancePhone.size() <= 40))
+        && (!('paymentScheme' in data) || data.paymentScheme in ['CBD', 'TOP 14 Hari', 'TOP 30 Hari'])
+        && data.creditLimit is number && data.creditLimit >= 0
+        && data.paymentTermDays is int && data.paymentTermDays >= 0 && data.paymentTermDays <= 365
+        && (!('contractPrices' in data) || (data.contractPrices is list && data.contractPrices.size() <= 100 && (data.contractPrices.size() == 0 || data.contractPrices[0] is map)))
+        && (!('nibDocUrl' in data) || (data.nibDocUrl is string && data.nibDocUrl.size() <= 300000))
+        && (!('nibFileName' in data) || (data.nibFileName is string && data.nibFileName.size() <= 160))
+        && (!('npwpDocUrl' in data) || (data.npwpDocUrl is string && data.npwpDocUrl.size() <= 300000))
+        && (!('npwpFileName' in data) || (data.npwpFileName is string && data.npwpFileName.size() <= 160))
+        && (!('verificationStatus' in data) || data.verificationStatus in ['Pending', 'Verified', 'Blacklisted'])
+        && (!('verifiedBy' in data) || (data.verifiedBy is string && data.verifiedBy.size() <= 128))
+        && (!('verifiedAt' in data) || (data.verifiedAt is string && data.verifiedAt.size() <= 40))
+        && data.active is bool
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWarehouse(data) {
+      return data.keys().hasAll(['id', 'code', 'name', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'code', 'name', 'address', 'picName', 'phone', 'active', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.code is string && data.code.size() >= 2 && data.code.size() <= 24
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
+        && (!('address' in data) || (data.address is string && data.address.size() <= 300))
+        && (!('picName' in data) || (data.picName is string && data.picName.size() <= 120))
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 40))
+        && data.active is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['id', 'code', 'name', 'createdAt'])
+        && data.keys().hasOnly(['id', 'code', 'name', 'description', 'createdAt'])
+        && isValidId(data.id)
+        && data.code is string && data.code.size() >= 2 && data.code.size() <= 24
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 80
+        && (!('description' in data) || (data.description is string && data.description.size() <= 240))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidUom(data) {
+      return data.keys().hasAll(['id', 'code', 'name', 'createdAt'])
+        && data.keys().hasOnly(['id', 'code', 'name', 'createdAt'])
+        && isValidId(data.id)
+        && data.code is string && data.code.size() >= 1 && data.code.size() <= 16
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 64
+        && data.createdAt is timestamp;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['id', 'sku', 'name', 'categoryId', 'uomCode', 'buyPrice', 'sellPrice', 'currency', 'minStock', 'maxStock', 'warehouseStocks', 'active', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'sku', 'name', 'categoryId', 'categoryName', 'uomCode', 'description', 'imageUrl', 'buyPrice', 'sellPrice', 'currency', 'minStock', 'maxStock', 'trackSerialOrExpiry', 'isService', 'warehouseStocks', 'active', 'createdBy', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.sku is string && data.sku.size() >= 2 && data.sku.size() <= 40
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 180
+        && isValidId(data.categoryId)
+        && (!('categoryName' in data) || (data.categoryName is string && data.categoryName.size() <= 80))
+        && data.uomCode is string && data.uomCode.size() >= 1 && data.uomCode.size() <= 16
+        && (!('description' in data) || (data.description is string && data.description.size() <= 600))
+        && (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 1000))
+        && data.buyPrice is number && data.buyPrice >= 0
+        && data.sellPrice is number && data.sellPrice >= 0
+        && isValidCurrency(data.currency)
+        && data.minStock is number && data.minStock >= 0
+        && data.maxStock is number && data.maxStock >= data.minStock
+        && (!('trackSerialOrExpiry' in data) || data.trackSerialOrExpiry is bool)
+        && (!('isService' in data) || data.isService is bool)
+        && data.warehouseStocks is map
+        && data.active is bool
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPoStatus(status) {
+      return status in ['Draft', 'Submitted', 'Approved by Manager', 'Ordered', 'Partially Received', 'Fully Received', 'Closed', 'Cancelled'];
+    }
+
+    function isValidPurchaseOrder(data) {
+      return data.keys().hasAll(['id', 'poNumber', 'supplierId', 'warehouseId', 'currency', 'exchangeRate', 'status', 'items', 'totalAmount', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'poNumber', 'supplierId', 'supplierName', 'warehouseId', 'warehouseName', 'currency', 'exchangeRate', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'expectedDate', 'notes', 'attachmentUrls', 'approvalTierRequired', 'directorApprovedBy', 'createdBy', 'createdByName', 'approvedBy', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.poNumber is string && data.poNumber.size() >= 4 && data.poNumber.size() <= 40
+        && isValidId(data.supplierId)
+        && (!('supplierName' in data) || (data.supplierName is string && data.supplierName.size() <= 160))
+        && isValidId(data.warehouseId)
+        && (!('warehouseName' in data) || (data.warehouseName is string && data.warehouseName.size() <= 120))
+        && isValidCurrency(data.currency)
+        && data.exchangeRate is number && data.exchangeRate > 0
+        && isValidPoStatus(data.status)
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 50
+        && data.items[0] is map
+        && (!('subtotal' in data) || (data.subtotal is number && data.subtotal >= 0))
+        && (!('taxAmount' in data) || (data.taxAmount is number && data.taxAmount >= 0))
+        && data.totalAmount is number && data.totalAmount >= 0
+        && (!('expectedDate' in data) || (data.expectedDate is string && data.expectedDate.size() <= 32))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 600))
+        && (!('attachmentUrls' in data) || (data.attachmentUrls is list && data.attachmentUrls.size() <= 5 && (data.attachmentUrls.size() == 0 || data.attachmentUrls[0] is string)))
+        && (!('approvalTierRequired' in data) || data.approvalTierRequired in ['Manager', 'Direktur'])
+        && (!('directorApprovedBy' in data) || (data.directorApprovedBy is string && data.directorApprovedBy.size() <= 128))
+        && isValidId(data.createdBy)
+        && (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120))
+        && (!('approvedBy' in data) || (data.approvedBy is string && data.approvedBy.size() <= 128))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidOrderLog(data) {
+      return data.keys().hasAll(['id', 'action', 'actorId', 'actorName', 'timestamp'])
+        && data.keys().hasOnly(['id', 'action', 'actorId', 'actorName', 'note', 'timestamp'])
+        && isValidId(data.id)
+        && data.action is string && data.action.size() >= 2 && data.action.size() <= 120
+        && isValidId(data.actorId)
+        && data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 120
+        && (!('note' in data) || (data.note is string && data.note.size() <= 400))
+        && data.timestamp is timestamp;
+    }
+
+    function isValidSoStatus(status) {
+      return status in ['Draft', 'Confirmed', 'Partially Delivered', 'Fully Delivered', 'Invoiced', 'Closed'];
+    }
+
+    function isValidSalesOrder(data) {
+      return data.keys().hasAll(['id', 'soNumber', 'customerId', 'warehouseId', 'currency', 'status', 'items', 'totalAmount', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'soNumber', 'customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'dueDate', 'invoiceNumber', 'taxInvoiceNumber', 'quotationId', 'quotationNumber', 'podImageUrl', 'podFileName', 'podReceiverName', 'podTimestamp', 'notes', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.soNumber is string && data.soNumber.size() >= 4 && data.soNumber.size() <= 40
+        && isValidId(data.customerId)
+        && (!('customerName' in data) || (data.customerName is string && data.customerName.size() <= 160))
+        && isValidId(data.warehouseId)
+        && (!('warehouseName' in data) || (data.warehouseName is string && data.warehouseName.size() <= 120))
+        && isValidCurrency(data.currency)
+        && isValidSoStatus(data.status)
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 50
+        && data.items[0] is map
+        && (!('subtotal' in data) || (data.subtotal is number && data.subtotal >= 0))
+        && (!('taxAmount' in data) || (data.taxAmount is number && data.taxAmount >= 0))
+        && data.totalAmount is number && data.totalAmount >= 0
+        && (!('dueDate' in data) || (data.dueDate is string && data.dueDate.size() <= 32))
+        && (!('invoiceNumber' in data) || (data.invoiceNumber is string && data.invoiceNumber.size() <= 48))
+        && (!('taxInvoiceNumber' in data) || (data.taxInvoiceNumber is string && data.taxInvoiceNumber.size() <= 48))
+        && (!('quotationId' in data) || (data.quotationId is string && data.quotationId.size() <= 128))
+        && (!('quotationNumber' in data) || (data.quotationNumber is string && data.quotationNumber.size() <= 48))
+        && (!('podImageUrl' in data) || (data.podImageUrl is string && data.podImageUrl.size() <= 300000))
+        && (!('podFileName' in data) || (data.podFileName is string && data.podFileName.size() <= 160))
+        && (!('podReceiverName' in data) || (data.podReceiverName is string && data.podReceiverName.size() <= 120))
+        && (!('podTimestamp' in data) || (data.podTimestamp is string && data.podTimestamp.size() <= 40))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 600))
+        && isValidId(data.createdBy)
+        && (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStockMovement(data) {
+      return data.keys().hasAll(['id', 'movementNumber', 'type', 'productId', 'warehouseId', 'quantityDelta', 'beforeQty', 'afterQty', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly(['id', 'movementNumber', 'type', 'referenceType', 'referenceId', 'referenceNumber', 'productId', 'productSku', 'productName', 'warehouseId', 'warehouseName', 'targetWarehouseId', 'targetWarehouseName', 'quantityDelta', 'beforeQty', 'afterQty', 'unitCost', 'notes', 'createdBy', 'createdByName', 'createdAt'])
+        && isValidId(data.id)
+        && data.movementNumber is string && data.movementNumber.size() >= 3 && data.movementNumber.size() <= 40
+        && data.type in ['GOODS_RECEIPT', 'GOODS_ISSUE', 'TRANSFER', 'STOCK_OPNAME']
+        && (!('referenceType' in data) || (data.referenceType is string && data.referenceType.size() <= 32))
+        && (!('referenceId' in data) || (data.referenceId is string && data.referenceId.size() <= 128))
+        && (!('referenceNumber' in data) || (data.referenceNumber is string && data.referenceNumber.size() <= 48))
+        && isValidId(data.productId)
+        && (!('productSku' in data) || (data.productSku is string && data.productSku.size() <= 40))
+        && (!('productName' in data) || (data.productName is string && data.productName.size() <= 180))
+        && isValidId(data.warehouseId)
+        && (!('warehouseName' in data) || (data.warehouseName is string && data.warehouseName.size() <= 120))
+        && (!('targetWarehouseId' in data) || (data.targetWarehouseId is string && data.targetWarehouseId.size() <= 128))
+        && (!('targetWarehouseName' in data) || (data.targetWarehouseName is string && data.targetWarehouseName.size() <= 120))
+        && data.quantityDelta is number
+        && data.beforeQty is number && data.beforeQty >= 0
+        && data.afterQty is number && data.afterQty >= 0
+        && (!('unitCost' in data) || (data.unitCost is number && data.unitCost >= 0))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 400))
+        && isValidId(data.createdBy)
+        && (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidInvoice(data) {
+      return data.keys().hasAll(['id', 'invoiceNumber', 'ledgerType', 'counterpartyId', 'currency', 'totalAmount', 'paidAmount', 'balanceDue', 'status', 'dueDate', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'invoiceNumber', 'ledgerType', 'counterpartyId', 'counterpartyName', 'referenceOrderId', 'referenceOrderNumber', 'taxInvoiceNumber', 'currency', 'exchangeRate', 'totalAmount', 'paidAmount', 'balanceDue', 'status', 'issueDate', 'dueDate', 'createdBy', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.invoiceNumber is string && data.invoiceNumber.size() >= 3 && data.invoiceNumber.size() <= 48
+        && data.ledgerType in ['AP', 'AR']
+        && isValidId(data.counterpartyId)
+        && (!('counterpartyName' in data) || (data.counterpartyName is string && data.counterpartyName.size() <= 160))
+        && (!('referenceOrderId' in data) || (data.referenceOrderId is string && data.referenceOrderId.size() <= 128))
+        && (!('referenceOrderNumber' in data) || (data.referenceOrderNumber is string && data.referenceOrderNumber.size() <= 48))
+        && (!('taxInvoiceNumber' in data) || (data.taxInvoiceNumber is string && data.taxInvoiceNumber.size() <= 48))
+        && isValidCurrency(data.currency)
+        && (!('exchangeRate' in data) || (data.exchangeRate is number && data.exchangeRate > 0))
+        && data.totalAmount is number && data.totalAmount >= 0
+        && data.paidAmount is number && data.paidAmount >= 0 && data.paidAmount <= data.totalAmount
+        && data.balanceDue is number && data.balanceDue >= 0
+        && data.status in ['UNPAID', 'PARTIAL', 'PAID', 'OVERDUE']
+        && (!('issueDate' in data) || (data.issueDate is string && data.issueDate.size() <= 32))
+        && data.dueDate is string && data.dueDate.size() >= 4 && data.dueDate.size() <= 32
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll(['id', 'amount', 'currency', 'paymentMethod', 'recordedBy', 'paidAt'])
+        && data.keys().hasOnly(['id', 'amount', 'currency', 'exchangeRate', 'paymentMethod', 'referenceNo', 'notes', 'recordedBy', 'recordedByName', 'paidAt'])
+        && isValidId(data.id)
+        && data.amount is number && data.amount > 0
+        && isValidCurrency(data.currency)
+        && (!('exchangeRate' in data) || (data.exchangeRate is number && data.exchangeRate > 0))
+        && data.paymentMethod is string && data.paymentMethod.size() >= 2 && data.paymentMethod.size() <= 120
+        && (!('referenceNo' in data) || (data.referenceNo is string && data.referenceNo.size() <= 80))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 300))
+        && isValidId(data.recordedBy)
+        && (!('recordedByName' in data) || (data.recordedByName is string && data.recordedByName.size() <= 120))
+        && data.paidAt is timestamp;
+    }
+
+    function isValidChartAccount(data) {
+      return data.keys().hasAll(['id', 'code', 'name', 'category', 'normalBalance', 'openingBalanceIdr', 'active', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'code', 'name', 'category', 'normalBalance', 'openingBalanceIdr', 'description', 'active', 'createdBy', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.code is string && data.code.size() >= 2 && data.code.size() <= 24
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 160
+        && data.category in ['Aset', 'Kewajiban', 'Ekuitas', 'Pendapatan', 'Beban']
+        && data.normalBalance in ['Debit', 'Kredit']
+        && data.openingBalanceIdr is number
+        && (!('description' in data) || (data.description is string && data.description.size() <= 400))
+        && data.active is bool
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidJournalEntry(data) {
+      return data.keys().hasAll(['id', 'entryNumber', 'entryDate', 'journalType', 'description', 'lines', 'totalDebitIdr', 'totalCreditIdr', 'status', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'entryNumber', 'entryDate', 'journalType', 'referenceType', 'referenceId', 'referenceNumber', 'description', 'lines', 'totalDebitIdr', 'totalCreditIdr', 'status', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.entryNumber is string && data.entryNumber.size() >= 4 && data.entryNumber.size() <= 48
+        && data.entryDate is string && data.entryDate.size() >= 8 && data.entryDate.size() <= 32
+        && data.journalType in ['Jurnal Umum', 'Pembelian (AP)', 'Penjualan (AR)', 'Kas & Bank', 'Penyesuaian']
+        && (!('referenceType' in data) || (data.referenceType is string && data.referenceType.size() <= 32))
+        && (!('referenceId' in data) || (data.referenceId is string && data.referenceId.size() <= 128))
+        && (!('referenceNumber' in data) || (data.referenceNumber is string && data.referenceNumber.size() <= 48))
+        && data.description is string && data.description.size() >= 2 && data.description.size() <= 400
+        && data.lines is list && data.lines.size() >= 2 && data.lines.size() <= 30
+        && data.lines[0] is map
+        && data.totalDebitIdr is number && data.totalDebitIdr > 0
+        && data.totalCreditIdr is number && data.totalDebitIdr == data.totalCreditIdr
+        && data.status in ['Posted', 'Void']
+        && isValidId(data.createdBy)
+        && (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['id', 'module', 'action', 'actorId', 'actorRole', 'createdAt'])
+        && data.keys().hasOnly(['id', 'module', 'action', 'targetId', 'targetLabel', 'actorId', 'actorEmail', 'actorRole', 'details', 'createdAt'])
+        && isValidId(data.id)
+        && data.module is string && data.module.size() >= 2 && data.module.size() <= 48
+        && data.action is string && data.action.size() >= 2 && data.action.size() <= 120
+        && (!('targetId' in data) || (data.targetId is string && data.targetId.size() <= 128))
+        && (!('targetLabel' in data) || (data.targetLabel is string && data.targetLabel.size() <= 160))
+        && isValidId(data.actorId)
+        && (!('actorEmail' in data) || (data.actorEmail is string && data.actorEmail.size() <= 254))
+        && data.actorRole is string && data.actorRole.size() >= 2 && data.actorRole.size() <= 40
+        && (!('details' in data) || (data.details is string && data.details.size() <= 500))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['id', 'title', 'message', 'severity', 'createdAt'])
+        && data.keys().hasOnly(['id', 'title', 'message', 'severity', 'targetRoles', 'readBy', 'linkModule', 'createdAt'])
+        && isValidId(data.id)
+        && data.title is string && data.title.size() >= 2 && data.title.size() <= 140
+        && data.message is string && data.message.size() >= 2 && data.message.size() <= 400
+        && data.severity in ['info', 'warning', 'critical']
+        && (!('targetRoles' in data) || (data.targetRoles is list && data.targetRoles.size() <= 10 && (data.targetRoles.size() == 0 || data.targetRoles[0] is string)))
+        && (!('readBy' in data) || (data.readBy is list && data.readBy.size() <= 100 && (data.readBy.size() == 0 || data.readBy[0] is string)))
+        && (!('linkModule' in data) || (data.linkModule is string && data.linkModule.size() <= 48))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidCompanySettings(data) {
+      return data.keys().hasAll(['id', 'companyName', 'defaultExchangeRateUsdIdr', 'taxRatePercent', 'updatedBy', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'companyName', 'tagline', 'npwp', 'address', 'phone', 'email', 'logoUrl', 'bankName', 'bankAccountNumber', 'bankAccountHolder', 'managerApprovalLimitIdr', 'defaultExchangeRateUsdIdr', 'taxRatePercent', 'isPkp', 'supplierCategories', 'initialSeedCompleted', 'updatedBy', 'updatedAt'])
+        && isValidId(data.id)
+        && data.companyName is string && data.companyName.size() >= 2 && data.companyName.size() <= 160
+        && (!('tagline' in data) || (data.tagline is string && data.tagline.size() <= 200))
+        && (!('npwp' in data) || (data.npwp is string && data.npwp.size() <= 40))
+        && (!('address' in data) || (data.address is string && data.address.size() <= 400))
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 40))
+        && (!('email' in data) || (data.email is string && data.email.size() <= 254))
+        && (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() <= 1000))
+        && (!('bankName' in data) || (data.bankName is string && data.bankName.size() <= 120))
+        && (!('bankAccountNumber' in data) || (data.bankAccountNumber is string && data.bankAccountNumber.size() <= 64))
+        && (!('bankAccountHolder' in data) || (data.bankAccountHolder is string && data.bankAccountHolder.size() <= 160))
+        && (!('managerApprovalLimitIdr' in data) || (data.managerApprovalLimitIdr is number && data.managerApprovalLimitIdr >= 0))
+        && data.defaultExchangeRateUsdIdr is number && data.defaultExchangeRateUsdIdr > 0
+        && data.taxRatePercent is number && data.taxRatePercent >= 0 && data.taxRatePercent <= 100
+        && (!('isPkp' in data) || data.isPkp is bool)
+        && (!('supplierCategories' in data) || (data.supplierCategories is list && data.supplierCategories.size() <= 50 && (data.supplierCategories.size() == 0 || data.supplierCategories[0] is string)))
+        && (!('initialSeedCompleted' in data) || data.initialSeedCompleted is bool)
+        && isValidId(data.updatedBy)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSalesQuotation(data) {
+      return data.keys().hasAll(['id', 'quotationNumber', 'customerId', 'warehouseId', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'quotationNumber', 'customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'notes', 'convertedSoId', 'convertedSoNumber', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.quotationNumber is string && data.quotationNumber.size() >= 4 && data.quotationNumber.size() <= 40
+        && isValidId(data.customerId)
+        && (!('customerName' in data) || (data.customerName is string && data.customerName.size() <= 160))
+        && isValidId(data.warehouseId)
+        && (!('warehouseName' in data) || (data.warehouseName is string && data.warehouseName.size() <= 120))
+        && isValidCurrency(data.currency)
+        && data.status in ['Draft', 'Sent', 'Accepted', 'Rejected', 'Expired', 'Converted']
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 50 && data.items[0] is map
+        && data.subtotal is number && data.subtotal >= 0
+        && data.taxAmount is number && data.taxAmount >= 0
+        && data.totalAmount is number && data.totalAmount >= 0
+        && data.validUntil is string && data.validUntil.size() >= 4 && data.validUntil.size() <= 32
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 600))
+        && (!('convertedSoId' in data) || (data.convertedSoId is string && data.convertedSoId.size() <= 128))
+        && (!('convertedSoNumber' in data) || (data.convertedSoNumber is string && data.convertedSoNumber.size() <= 40))
+        && isValidId(data.createdBy)
+        && (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidVendorRfq(data) {
+      return data.keys().hasAll(['id', 'rfqNumber', 'title', 'warehouseId', 'deadlineDate', 'status', 'items', 'invitedSupplierIds', 'quotes', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'rfqNumber', 'title', 'warehouseId', 'warehouseName', 'deadlineDate', 'status', 'items', 'invitedSupplierIds', 'quotes', 'awardedSupplierId', 'awardedPoId', 'awardedPoNumber', 'notes', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.rfqNumber is string && data.rfqNumber.size() >= 4 && data.rfqNumber.size() <= 40
+        && data.title is string && data.title.size() >= 2 && data.title.size() <= 160
+        && isValidId(data.warehouseId)
+        && (!('warehouseName' in data) || (data.warehouseName is string && data.warehouseName.size() <= 120))
+        && data.deadlineDate is string && data.deadlineDate.size() >= 4 && data.deadlineDate.size() <= 32
+        && data.status in ['Draft', 'Open', 'Awarded', 'Cancelled']
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 50 && data.items[0] is map
+        && data.invitedSupplierIds is list && data.invitedSupplierIds.size() <= 20 && (data.invitedSupplierIds.size() == 0 || data.invitedSupplierIds[0] is string)
+        && data.quotes is list && data.quotes.size() <= 20 && (data.quotes.size() == 0 || data.quotes[0] is map)
+        && (!('awardedSupplierId' in data) || (data.awardedSupplierId is string && data.awardedSupplierId.size() <= 128))
+        && (!('awardedPoId' in data) || (data.awardedPoId is string && data.awardedPoId.size() <= 128))
+        && (!('awardedPoNumber' in data) || (data.awardedPoNumber is string && data.awardedPoNumber.size() <= 40))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 600))
+        && isValidId(data.createdBy)
+        && (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGoodsReturn(data) {
+      return data.keys().hasAll(['id', 'returnNumber', 'returnType', 'status', 'referenceOrderId', 'referenceOrderNumber', 'counterpartyId', 'counterpartyName', 'warehouseId', 'currency', 'returnDate', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'reason', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'returnNumber', 'returnType', 'status', 'referenceOrderId', 'referenceOrderNumber', 'counterpartyId', 'counterpartyName', 'warehouseId', 'warehouseName', 'currency', 'returnDate', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'reason', 'createdBy', 'createdByName', 'completedBy', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.returnNumber is string && data.returnNumber.size() >= 4 && data.returnNumber.size() <= 40
+        && data.returnType in ['PURCHASE_RETURN', 'SALES_RETURN']
+        && data.status in ['Pending', 'Completed', 'Cancelled']
+        && isValidId(data.referenceOrderId)
+        && data.referenceOrderNumber is string && data.referenceOrderNumber.size() >= 2 && data.referenceOrderNumber.size() <= 48
+        && isValidId(data.counterpartyId)
+        && data.counterpartyName is string && data.counterpartyName.size() >= 1 && data.counterpartyName.size() <= 160
+        && isValidId(data.warehouseId)
+        && (!('warehouseName' in data) || (data.warehouseName is string && data.warehouseName.size() <= 120))
+        && isValidCurrency(data.currency)
+        && data.returnDate is string && data.returnDate.size() >= 4 && data.returnDate.size() <= 32
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 50 && data.items[0] is map
+        && data.subtotal is number && data.subtotal >= 0
+        && data.taxAmount is number && data.taxAmount >= 0
+        && data.totalAmount is number && data.totalAmount >= 0
+        && data.reason is string && data.reason.size() >= 2 && data.reason.size() <= 400
+        && isValidId(data.createdBy)
+        && (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120))
+        && (!('completedBy' in data) || (data.completedBy is string && data.completedBy.size() <= 128))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidInventoryBatch(data) {
+      return data.keys().hasAll(['id', 'productId', 'warehouseId', 'batchNumber', 'qty', 'status', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'productId', 'productSku', 'productName', 'warehouseId', 'warehouseName', 'batchNumber', 'serialNumber', 'qty', 'warrantyUntil', 'expiryDate', 'status', 'notes', 'createdBy', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && isValidId(data.productId)
+        && (!('productSku' in data) || (data.productSku is string && data.productSku.size() <= 40))
+        && (!('productName' in data) || (data.productName is string && data.productName.size() <= 180))
+        && isValidId(data.warehouseId)
+        && (!('warehouseName' in data) || (data.warehouseName is string && data.warehouseName.size() <= 120))
+        && data.batchNumber is string && data.batchNumber.size() >= 2 && data.batchNumber.size() <= 64
+        && (!('serialNumber' in data) || (data.serialNumber is string && data.serialNumber.size() <= 80))
+        && data.qty is number && data.qty >= 0
+        && (!('warrantyUntil' in data) || (data.warrantyUntil is string && data.warrantyUntil.size() <= 32))
+        && (!('expiryDate' in data) || (data.expiryDate is string && data.expiryDate.size() <= 32))
+        && data.status in ['Active', 'Quarantine', 'Expired', 'Depleted']
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 400))
+        && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPeriodLock(data) {
+      return data.keys().hasAll(['id', 'periodKey', 'locked', 'lockedBy', 'lockedAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'periodKey', 'locked', 'notes', 'lockedBy', 'lockedByName', 'lockedAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.periodKey is string && data.periodKey.matches('^\\d{4}-\\d{2}$')
+        && data.locked is bool
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 400))
+        && isValidId(data.lockedBy)
+        && (!('lockedByName' in data) || (data.lockedByName is string && data.lockedByName.size() <= 120))
+        && data.lockedAt is string && data.lockedAt.size() >= 4 && data.lockedAt.size() <= 40
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMonthlyBudget(data) {
+      return data.keys().hasAll(['id', 'periodKey', 'targetRevenueIdr', 'maxCogsIdr', 'maxOpexIdr', 'updatedBy', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'periodKey', 'targetRevenueIdr', 'maxCogsIdr', 'maxOpexIdr', 'notes', 'updatedBy', 'updatedAt'])
+        && isValidId(data.id)
+        && data.periodKey is string && data.periodKey.matches('^\\d{4}-\\d{2}$')
+        && data.targetRevenueIdr is number && data.targetRevenueIdr >= 0
+        && data.maxCogsIdr is number && data.maxCogsIdr >= 0
+        && data.maxOpexIdr is number && data.maxOpexIdr >= 0
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 400))
+        && isValidId(data.updatedBy)
+        && data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection Rules
+    // =========================================================================
+
+    match /test/connection {
+      allow get: if isSignedIn();
+    }
+
+    match /users/{userId} {
+      allow get: if isVerified() && isValidId(userId) && (
+        request.auth.uid == userId ||
+        isDirektur() ||
+        hasRole(['Manager']) ||
+        (resource != null && existing().email is string && request.auth.token.email is string && existing().email.lower() == request.auth.token.email.lower())
+      );
+      allow list: if isVerified() && (
+        isBootstrappedAdmin() ||
+        hasRole(['Direktur', 'Manager']) ||
+        resource.data.uid == request.auth.uid ||
+        (resource.data.email is string && request.auth.token.email is string && resource.data.email.lower() == request.auth.token.email.lower())
+      );
+      allow create: if isVerified() && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == userId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          (isBootstrappedAdmin() && request.auth.uid == userId && incoming().role == 'Direktur' && incoming().active == true) ||
+          (
+            request.auth.uid == userId
+            && 'claimedFromUserId' in incoming()
+            && exists(/databases/$(database)/documents/users/$(incoming().claimedFromUserId))
+            && get(/databases/$(database)/documents/users/$(incoming().claimedFromUserId)).data.email is string
+            && request.auth.token.email is string
+            && get(/databases/$(database)/documents/users/$(incoming().claimedFromUserId)).data.email.lower() == request.auth.token.email.lower()
+            && incoming().email.lower() == request.auth.token.email.lower()
+            && (
+              incoming().role == get(/databases/$(database)/documents/users/$(incoming().claimedFromUserId)).data.role ||
+              (get(/databases/$(database)/documents/users/$(incoming().claimedFromUserId)).data.role == 'Super Admin' && incoming().role == 'Direktur') ||
+              (get(/databases/$(database)/documents/users/$(incoming().claimedFromUserId)).data.role == 'Anggel Investor' && incoming().role == 'Angel Investor')
+            )
+            && incoming().active == get(/databases/$(database)/documents/users/$(incoming().claimedFromUserId)).data.active
+          ) ||
+          (request.auth.uid == userId && !('claimedFromUserId' in incoming()) && incoming().role == 'Viewer' && incoming().active == true) ||
+          isDirektur()
+        );
+      allow update: if isVerified() && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isDirektur() ||
+          (
+            request.auth.uid == userId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt'])
+            && incoming().role == existing().role
+            && incoming().active == existing().active
+          ) ||
+          (
+            request.auth.uid == userId
+            && existing().role == 'Anggel Investor'
+            && incoming().role == 'Angel Investor'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'updatedAt'])
+            && incoming().active == existing().active
+          )
+        );
+      allow delete: if isVerified() && isValidId(userId) && request.auth.uid != userId && (
+        isDirektur() ||
+        (existing().email is string && request.auth.token.email is string && existing().email.lower() == request.auth.token.email.lower())
+      );
+    }
+
+    match /suppliers/{supplierId} {
+      allow get: if isActiveUser() && isValidId(supplierId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(supplierId)
+        && isValidSupplier(incoming())
+        && hasRole(['Direktur', 'Manager', 'Purchasing'])
+        && incoming().id == supplierId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isDirektur() ||
+          ('verificationStatus' in incoming() && incoming().verificationStatus == 'Pending' && !('verifiedBy' in incoming()) && !('verifiedAt' in incoming()))
+        );
+      allow update: if isValidId(supplierId)
+        && isValidSupplier(incoming())
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isDirektur() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'code', 'name', 'vendorCategory', 'nib', 'npwp', 'taxStatus', 'address',
+            'contactPerson', 'phone', 'email', 'bankName', 'bankAccount', 'paymentScheme',
+            'paymentTermDays', 'defaultCurrency', 'nibDocUrl', 'nibFileName', 'npwpDocUrl',
+            'npwpFileName', 'ktpDirectorDocUrl', 'ktpDirectorFileName', 'verificationStatus',
+            'verifiedBy', 'verifiedAt', 'active', 'updatedAt'
+          ])) ||
+          (hasRole(['Manager', 'Purchasing']) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'code', 'name', 'vendorCategory', 'nib', 'npwp', 'taxStatus', 'address',
+            'contactPerson', 'phone', 'email', 'bankName', 'bankAccount', 'paymentScheme',
+            'paymentTermDays', 'defaultCurrency', 'nibDocUrl', 'nibFileName', 'npwpDocUrl',
+            'npwpFileName', 'ktpDirectorDocUrl', 'ktpDirectorFileName', 'active', 'updatedAt'
+          ]))
+        );
+      allow delete: if isDirektur() && isValidId(supplierId);
+    }
+
+    match /customers/{customerId} {
+      allow get: if isActiveUser() && isValidId(customerId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(customerId)
+        && isValidCustomer(incoming())
+        && hasRole(['Direktur', 'Manager', 'Sales'])
+        && incoming().id == customerId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          !('paymentScheme' in incoming()) ||
+          !(incoming().paymentScheme in ['TOP 14 Hari', 'TOP 30 Hari']) ||
+          isDirektur() ||
+          (
+            'nib' in incoming() && incoming().nib.size() >= 3 &&
+            'npwp' in incoming() && incoming().npwp.size() >= 3
+          )
+        )
+        && (
+          isDirektur() ||
+          (
+            'verificationStatus' in incoming() && incoming().verificationStatus == 'Pending' &&
+            incoming().creditLimit == 0 &&
+            !('verifiedBy' in incoming()) &&
+            !('verifiedAt' in incoming())
+          )
+        );
+      allow update: if isValidId(customerId)
+        && isValidCustomer(incoming())
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isDirektur() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'code', 'name', 'nib', 'npwp', 'taxStatus', 'address', 'billingAddress',
+            'shippingAddress', 'contactPerson', 'phone', 'email', 'picPurchasingName',
+            'picPurchasingPhone', 'picWarehouseName', 'picWarehousePhone', 'picFinanceName',
+            'picFinancePhone', 'paymentScheme', 'creditLimit', 'paymentTermDays', 'contractPrices',
+            'nibDocUrl', 'nibFileName', 'npwpDocUrl', 'npwpFileName', 'verificationStatus',
+            'verifiedBy', 'verifiedAt', 'active', 'updatedAt'
+          ])) ||
+          (hasRole(['Manager', 'Sales']) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'code', 'name', 'nib', 'npwp', 'taxStatus', 'address', 'billingAddress',
+            'shippingAddress', 'contactPerson', 'phone', 'email', 'picPurchasingName',
+            'picPurchasingPhone', 'picWarehouseName', 'picWarehousePhone', 'picFinanceName',
+            'picFinancePhone', 'paymentScheme', 'paymentTermDays', 'contractPrices',
+            'nibDocUrl', 'nibFileName', 'npwpDocUrl', 'npwpFileName', 'active', 'updatedAt'
+          ]))
+        );
+      allow delete: if isDirektur() && isValidId(customerId);
+    }
+
+    match /warehouses/{warehouseId} {
+      allow get: if isActiveUser() && isValidId(warehouseId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(warehouseId)
+        && isValidWarehouse(incoming())
+        && hasRole(['Direktur', 'Manager', 'Warehouse'])
+        && incoming().id == warehouseId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(warehouseId)
+        && isValidWarehouse(incoming())
+        && hasRole(['Direktur', 'Manager', 'Warehouse'])
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['code', 'name', 'address', 'picName', 'phone', 'active', 'updatedAt']);
+      allow delete: if isDirektur() && isValidId(warehouseId);
+    }
+
+    match /categories/{categoryId} {
+      allow get: if isActiveUser() && isValidId(categoryId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(categoryId)
+        && isValidCategory(incoming())
+        && hasRole(['Direktur', 'Manager', 'Purchasing', 'Warehouse'])
+        && incoming().id == categoryId
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(categoryId)
+        && isValidCategory(incoming())
+        && hasRole(['Direktur', 'Manager'])
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['code', 'name', 'description']);
+      allow delete: if isDirektur() && isValidId(categoryId);
+    }
+
+    match /uoms/{uomId} {
+      allow get: if isActiveUser() && isValidId(uomId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(uomId)
+        && isValidUom(incoming())
+        && hasRole(['Direktur', 'Manager', 'Purchasing', 'Warehouse'])
+        && incoming().id == uomId
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(uomId)
+        && isValidUom(incoming())
+        && hasRole(['Direktur', 'Manager'])
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['code', 'name']);
+      allow delete: if isDirektur() && isValidId(uomId);
+    }
+
+    match /products/{productId} {
+      allow get: if isActiveUser() && isValidId(productId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(productId)
+        && isValidProduct(incoming())
+        && hasRole(['Direktur', 'Manager', 'Purchasing', 'Warehouse'])
+        && (exists(/databases/$(database)/documents/categories/$(incoming().categoryId)) || existsAfter(/databases/$(database)/documents/categories/$(incoming().categoryId)))
+        && incoming().id == productId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(productId)
+        && isValidProduct(incoming())
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (hasRole(['Direktur', 'Manager', 'Purchasing'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['sku', 'name', 'categoryId', 'categoryName', 'uomCode', 'description', 'imageUrl', 'buyPrice', 'sellPrice', 'currency', 'minStock', 'maxStock', 'trackSerialOrExpiry', 'isService', 'warehouseStocks', 'active', 'updatedAt'])) ||
+          (hasRole(['Warehouse', 'Sales', 'Finance'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['warehouseStocks', 'updatedAt']))
+        );
+      allow delete: if isDirektur() && isValidId(productId);
+    }
+
+    match /purchaseOrders/{poId} {
+      allow get: if isActiveUser() && isValidId(poId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(poId)
+        && isValidPurchaseOrder(incoming())
+        && hasRole(['Direktur', 'Manager', 'Purchasing'])
+        && (exists(/databases/$(database)/documents/suppliers/$(incoming().supplierId)) || existsAfter(/databases/$(database)/documents/suppliers/$(incoming().supplierId)))
+        && (exists(/databases/$(database)/documents/warehouses/$(incoming().warehouseId)) || existsAfter(/databases/$(database)/documents/warehouses/$(incoming().warehouseId)))
+        && incoming().id == poId
+        && (incoming().status == 'Draft' || isDirektur())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(poId)
+        && isValidPurchaseOrder(incoming())
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isDirektur() ||
+          (
+            !(existing().status in ['Closed', 'Cancelled']) && (
+              (hasRole(['Manager'])
+                && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'approvedBy', 'notes', 'updatedAt'])
+                && incoming().status in ['Approved by Manager', 'Cancelled']
+                && (
+                  incoming().status != 'Approved by Manager' ||
+                  (
+                    (!('approvalTierRequired' in existing()) || existing().approvalTierRequired != 'Direktur') &&
+                    (
+                      ('approvalTierRequired' in existing() && existing().approvalTierRequired == 'Manager') ||
+                      (existing().currency == 'IDR' && existing().totalAmount <= 25000000) ||
+                      (existing().currency == 'USD' && existing().totalAmount * existing().exchangeRate <= 25000000)
+                    )
+                  )
+                )) ||
+              (hasRole(['Purchasing'])
+                && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'taxAmount', 'totalAmount', 'expectedDate', 'notes', 'attachmentUrls', 'status', 'updatedAt'])
+                && incoming().status in ['Draft', 'Submitted', 'Ordered', 'Cancelled']) ||
+              (hasRole(['Warehouse'])
+                && existing().status in ['Approved by Manager', 'Ordered', 'Partially Received']
+                && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'status', 'updatedAt'])
+                && incoming().status in ['Partially Received', 'Fully Received']) ||
+              (hasRole(['Finance'])
+                && existing().status == 'Fully Received'
+                && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+                && incoming().status == 'Closed')
+            )
+          )
+        );
+      allow delete: if isDirektur() && isValidId(poId);
+
+      match /logs/{logId} {
+        allow get: if isActiveUser() && isValidId(poId) && isValidId(logId)
+          && exists(/databases/$(database)/documents/purchaseOrders/$(poId));
+        allow list: if isActiveUser();
+        allow create: if isValidId(poId) && isValidId(logId)
+          && (exists(/databases/$(database)/documents/purchaseOrders/$(poId)) || existsAfter(/databases/$(database)/documents/purchaseOrders/$(poId)))
+          && isValidOrderLog(incoming())
+          && hasRole(['Direktur', 'Manager', 'Purchasing', 'Warehouse', 'Finance'])
+          && incoming().id == logId
+          && incoming().actorId == request.auth.uid
+          && incoming().timestamp == request.time;
+        allow update: if false;
+        allow delete: if isDirektur() && isValidId(poId) && isValidId(logId);
+      }
+    }
+
+    match /salesOrders/{soId} {
+      allow get: if isActiveUser() && isValidId(soId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(soId)
+        && isValidSalesOrder(incoming())
+        && hasRole(['Direktur', 'Manager', 'Sales'])
+        && (exists(/databases/$(database)/documents/customers/$(incoming().customerId)) || existsAfter(/databases/$(database)/documents/customers/$(incoming().customerId)))
+        && (exists(/databases/$(database)/documents/warehouses/$(incoming().warehouseId)) || existsAfter(/databases/$(database)/documents/warehouses/$(incoming().warehouseId)))
+        && incoming().id == soId
+        && (incoming().status in ['Draft', 'Confirmed'] || isDirektur())
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(soId)
+        && isValidSalesOrder(incoming())
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isDirektur() ||
+          (
+            existing().status != 'Closed' && (
+              (hasRole(['Manager', 'Sales'])
+                && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'taxAmount', 'totalAmount', 'dueDate', 'notes', 'status', 'quotationId', 'quotationNumber', 'updatedAt'])
+                && incoming().status in ['Draft', 'Confirmed', 'Closed']) ||
+              (hasRole(['Warehouse'])
+                && existing().status in ['Confirmed', 'Partially Delivered']
+                && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'status', 'podImageUrl', 'podFileName', 'podReceiverName', 'podTimestamp', 'updatedAt'])
+                && incoming().status in ['Partially Delivered', 'Fully Delivered']) ||
+              (hasRole(['Finance'])
+                && existing().status in ['Fully Delivered', 'Invoiced']
+                && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'invoiceNumber', 'taxInvoiceNumber', 'updatedAt'])
+                && incoming().status in ['Invoiced', 'Closed'])
+            )
+          )
+        );
+      allow delete: if isDirektur() && isValidId(soId);
+    }
+
+    match /stockMovements/{movementId} {
+      allow get: if isActiveUser() && isValidId(movementId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(movementId)
+        && isValidStockMovement(incoming())
+        && hasRole(['Direktur', 'Manager', 'Warehouse', 'Sales', 'Finance'])
+        && (exists(/databases/$(database)/documents/products/$(incoming().productId)) || existsAfter(/databases/$(database)/documents/products/$(incoming().productId)))
+        && (exists(/databases/$(database)/documents/warehouses/$(incoming().warehouseId)) || existsAfter(/databases/$(database)/documents/warehouses/$(incoming().warehouseId)))
+        && incoming().id == movementId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isDirektur() && isValidId(movementId);
+    }
+
+    match /invoices/{invoiceId} {
+      allow get: if isActiveUser() && isValidId(invoiceId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(invoiceId)
+        && isValidInvoice(incoming())
+        && hasRole(['Direktur', 'Manager', 'Finance', 'Warehouse', 'Sales'])
+        && incoming().id == invoiceId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(invoiceId)
+        && isValidInvoice(incoming())
+        && hasRole(['Direktur', 'Manager', 'Finance'])
+        && incoming().id == existing().id
+        && incoming().ledgerType == existing().ledgerType
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['totalAmount', 'paidAmount', 'balanceDue', 'status', 'exchangeRate', 'taxInvoiceNumber', 'updatedAt']);
+      allow delete: if isDirektur() && isValidId(invoiceId);
+
+      match /payments/{paymentId} {
+        allow get: if isActiveUser() && isValidId(invoiceId) && isValidId(paymentId)
+          && exists(/databases/$(database)/documents/invoices/$(invoiceId));
+        allow list: if isActiveUser();
+        allow create: if isValidId(invoiceId) && isValidId(paymentId)
+          && (exists(/databases/$(database)/documents/invoices/$(invoiceId)) || existsAfter(/databases/$(database)/documents/invoices/$(invoiceId)))
+          && isValidPayment(incoming())
+          && hasRole(['Direktur', 'Manager', 'Finance'])
+          && incoming().id == paymentId
+          && incoming().recordedBy == request.auth.uid
+          && incoming().paidAt == request.time;
+        allow update: if false;
+        allow delete: if isDirektur() && isValidId(invoiceId) && isValidId(paymentId);
+      }
+    }
+
+    match /chartOfAccounts/{accountId} {
+      allow get: if isActiveUser() && isValidId(accountId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(accountId)
+        && isValidChartAccount(incoming())
+        && hasRole(['Direktur', 'Manager', 'Finance'])
+        && incoming().id == accountId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(accountId)
+        && isValidChartAccount(incoming())
+        && hasRole(['Direktur', 'Manager', 'Finance'])
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['code', 'name', 'category', 'normalBalance', 'openingBalanceIdr', 'description', 'active', 'updatedAt']);
+      allow delete: if isDirektur() && isValidId(accountId);
+    }
+
+    match /journalEntries/{entryId} {
+      allow get: if isActiveUser() && isValidId(entryId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(entryId)
+        && isValidJournalEntry(incoming())
+        && hasRole(['Direktur', 'Manager', 'Finance', 'Warehouse', 'Sales'])
+        && incoming().id == entryId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(entryId)
+        && isValidJournalEntry(incoming())
+        && hasRole(['Direktur', 'Manager', 'Finance'])
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && incoming().status == 'Void';
+      allow delete: if isDirektur() && isValidId(entryId);
+    }
+
+    match /auditLogs/{logId} {
+      allow get: if isActiveUser() && isValidId(logId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(logId)
+        && isValidAuditLog(incoming())
+        && isActiveUser()
+        && incoming().id == logId
+        && incoming().actorId == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isDirektur() && isValidId(logId);
+    }
+
+    match /notifications/{notifId} {
+      allow get: if isActiveUser() && isValidId(notifId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(notifId)
+        && isValidNotification(incoming())
+        && isActiveUser()
+        && incoming().id == notifId
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(notifId)
+        && isValidNotification(incoming())
+        && isActiveUser()
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['readBy']);
+      allow delete: if isDirektur() && isValidId(notifId);
+    }
+
+    match /settings/{settingId} {
+      allow get: if isActiveUser() && isValidId(settingId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(settingId)
+        && isValidCompanySettings(incoming())
+        && hasRole(['Direktur', 'Manager'])
+        && incoming().id == settingId
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(settingId)
+        && isValidCompanySettings(incoming())
+        && incoming().id == existing().id
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time
+        && (
+          hasRole(['Direktur', 'Manager']) ||
+          (settingId == 'company'
+            && hasRole(['Purchasing'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['supplierCategories', 'updatedBy', 'updatedAt']))
+        );
+      allow delete: if false;
+    }
+
+    match /salesQuotations/{quotationId} {
+      allow get: if isActiveUser() && isValidId(quotationId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(quotationId)
+        && isValidSalesQuotation(incoming())
+        && hasRole(['Direktur', 'Manager', 'Sales'])
+        && (exists(/databases/$(database)/documents/customers/$(incoming().customerId)) || existsAfter(/databases/$(database)/documents/customers/$(incoming().customerId)))
+        && (exists(/databases/$(database)/documents/warehouses/$(incoming().warehouseId)) || existsAfter(/databases/$(database)/documents/warehouses/$(incoming().warehouseId)))
+        && incoming().id == quotationId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(quotationId)
+        && isValidSalesQuotation(incoming())
+        && hasRole(['Direktur', 'Manager', 'Sales'])
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'notes', 'convertedSoId', 'convertedSoNumber', 'updatedAt']);
+      allow delete: if isDirektur() && isValidId(quotationId);
+    }
+
+    match /vendorRfqs/{rfqId} {
+      allow get: if isActiveUser() && isValidId(rfqId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(rfqId)
+        && isValidVendorRfq(incoming())
+        && hasRole(['Direktur', 'Manager', 'Purchasing'])
+        && (exists(/databases/$(database)/documents/warehouses/$(incoming().warehouseId)) || existsAfter(/databases/$(database)/documents/warehouses/$(incoming().warehouseId)))
+        && incoming().id == rfqId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(rfqId)
+        && isValidVendorRfq(incoming())
+        && hasRole(['Direktur', 'Manager', 'Purchasing'])
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'warehouseId', 'warehouseName', 'deadlineDate', 'status', 'items', 'invitedSupplierIds', 'quotes', 'awardedSupplierId', 'awardedPoId', 'awardedPoNumber', 'notes', 'updatedAt']);
+      allow delete: if isDirektur() && isValidId(rfqId);
+    }
+
+    match /goodsReturns/{returnId} {
+      allow get: if isActiveUser() && isValidId(returnId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(returnId)
+        && isValidGoodsReturn(incoming())
+        && hasRole(['Direktur', 'Manager', 'Purchasing', 'Sales', 'Warehouse', 'Finance'])
+        && incoming().id == returnId
+        && (incoming().status == 'Pending' || hasRole(['Direktur', 'Manager', 'Finance']))
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(returnId)
+        && isValidGoodsReturn(incoming())
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (hasRole(['Direktur', 'Manager', 'Finance'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'completedBy', 'reason', 'updatedAt'])) ||
+          (hasRole(['Purchasing', 'Sales', 'Warehouse'])
+            && existing().status == 'Pending'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reason', 'updatedAt'])
+            && incoming().status == 'Cancelled')
+        );
+      allow delete: if isDirektur() && isValidId(returnId);
+    }
+
+    match /inventoryBatches/{batchId} {
+      allow get: if isActiveUser() && isValidId(batchId);
+      allow list: if isActiveUser();
+      allow create: if isValidId(batchId)
+        && isValidInventoryBatch(incoming())
+        && hasRole(['Direktur', 'Manager', 'Warehouse'])
+        && (exists(/databases/$(database)/documents/products/$(incoming().productId)) || existsAfter(/databases/$(database)/documents/products/$(incoming().productId)))
+        && (exists(/databases/$(database)/documents/warehouses/$(incoming().warehouseId)) || existsAfter(/databases/$(database)/documents/warehouses/$(incoming().warehouseId)))
+        && incoming().id == batchId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(batchId)
+        && isValidInventoryBatch(incoming())
+        && hasRole(['Direktur', 'Manager', 'Warehouse'])
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['batchNumber', 'serialNumber', 'qty', 'warrantyUntil', 'expiryDate', 'status', 'notes', 'updatedAt']);
+      allow delete: if isDirektur() && isValidId(batchId);
+    }
+
+    match /periodClosings/{periodId} {
+      allow get: if isActiveUser() && isValidId(periodId);
+      allow list: if isActiveUser();
+      allow create, update: if isValidId(periodId)
+        && isValidPeriodLock(incoming())
+        && hasRole(['Direktur', 'Manager', 'Finance'])
+        && incoming().id == periodId
+        && incoming().lockedBy == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow delete: if isDirektur() && isValidId(periodId);
+    }
+
+    match /budgets/{budgetId} {
+      allow get: if isActiveUser() && isValidId(budgetId);
+      allow list: if isActiveUser();
+      allow create, update: if isValidId(budgetId)
+        && isValidMonthlyBudget(incoming())
+        && hasRole(['Direktur', 'Manager', 'Finance'])
+        && incoming().id == budgetId
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow delete: if isDirektur() && isValidId(budgetId);
+    }
+  }
+}
