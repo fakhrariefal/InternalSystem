@@ -123,7 +123,7 @@ export function PrintableDocumentSheet({ data }: { data: PrintableDocumentData }
 
       {/* Main Line Items / Attributes Table */}
       <section className="print-doc-table-wrap">
-        <table className="print-doc-table">
+        <table className={`print-doc-table ${data.columns.length <= 2 ? 'print-doc-table--compact' : ''}`}>
           <thead>
             <tr>
               {data.columns.map((col, idx) => (

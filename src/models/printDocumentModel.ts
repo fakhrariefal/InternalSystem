@@ -633,11 +633,31 @@ export function buildPaymentReceiptPrintDoc(
   };
 }
 
+export function formatPartnerRegistrationNumber(
+  code: string | undefined,
+  fallbackId: string,
+  registeredAt?: string
+): string {
+  const yearMatch = (registeredAt || '').match(/^(\d{4})/);
+  const year = yearMatch ? yearMatch[1] : String(new Date().getFullYear());
+  const raw = (code || fallbackId || '001').trim().toUpperCase();
+  const withoutPrefix = raw
+    .replace(/^(?:REG|SUP|CUST|CUS|BUY|VND)[-_]+/gi, '')
+    .replace(/^\d{4}[-_]+/, '');
+  const base = withoutPrefix || raw;
+  const suffix = /^\d+$/.test(base) ? base.padStart(3, '0') : base;
+  return `REG-${year}-${suffix}`;
+}
+
 export function buildSupplierRegistrationPrintDoc(
   supplier: Supplier,
   company: CompanySettings
 ): PrintableDocumentData {
-  const regCode = `REG-SUP-${supplier.code || supplier.id.toUpperCase()}`;
+  const regCode = formatPartnerRegistrationNumber(
+    supplier.code,
+    supplier.id,
+    supplier.createdAt || supplier.verifiedAt || supplier.updatedAt
+  );
   const verifiedDate =
     (supplier.verifiedAt || supplier.updatedAt || supplier.createdAt || '').slice(0, 10) || '-';
 
@@ -695,7 +715,11 @@ export function buildBuyerRegistrationPrintDoc(
   customer: Customer,
   company: CompanySettings
 ): PrintableDocumentData {
-  const regCode = `REG-BUY-${customer.code || customer.id.toUpperCase()}`;
+  const regCode = formatPartnerRegistrationNumber(
+    customer.code,
+    customer.id,
+    customer.createdAt || customer.verifiedAt || customer.updatedAt
+  );
   const verifiedDate =
     (customer.verifiedAt || customer.updatedAt || customer.createdAt || '').slice(0, 10) || '-';
 

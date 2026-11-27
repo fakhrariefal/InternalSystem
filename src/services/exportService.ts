@@ -11,6 +11,7 @@ import {
   type MonthlyPerformanceSummary,
   type VatReconciliationSummary,
 } from '../models/erpLogic';
+import { formatPartnerRegistrationNumber } from '../models/printDocumentModel';
 import type {
   AccountingInvoice,
   CompanySettings,
@@ -1734,7 +1735,11 @@ export async function exportSupplierRegistrationPdf(
   company: CompanySettings
 ): Promise<void> {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-  const regCode = `REG-SUP-${supplier.code || supplier.id.toUpperCase()}`;
+  const regCode = formatPartnerRegistrationNumber(
+    supplier.code,
+    supplier.id,
+    supplier.createdAt || supplier.verifiedAt || supplier.updatedAt
+  );
   const title = 'BUKTI REGISTRASI VENDOR / SUPPLIER RESMI';
   const startMetaY = drawCorporateBanner(doc, company, title, regCode);
 
@@ -1837,7 +1842,11 @@ export async function exportBuyerRegistrationPdf(
   company: CompanySettings
 ): Promise<void> {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-  const regCode = `REG-BUY-${customer.code || customer.id.toUpperCase()}`;
+  const regCode = formatPartnerRegistrationNumber(
+    customer.code,
+    customer.id,
+    customer.createdAt || customer.verifiedAt || customer.updatedAt
+  );
   const title = 'BUKTI REGISTRASI BUYER / CUSTOMER B2B RESMI';
   const startMetaY = drawCorporateBanner(doc, company, title, regCode);
 

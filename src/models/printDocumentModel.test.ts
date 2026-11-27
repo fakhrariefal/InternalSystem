@@ -9,6 +9,7 @@ import {
   buildSalesQuotationPrintDoc,
   buildSupplierRegistrationPrintDoc,
   buildSuratJalanPrintDoc,
+  formatPartnerRegistrationNumber,
 } from './printDocumentModel';
 import { createInitialSeedState } from './seedData';
 
@@ -61,7 +62,7 @@ test('Unified print model generates SO, Surat Jalan, Kwitansi, and Verified Part
   const so = seed.salesOrders[0];
   const customer = seed.customers.find((c) => c.id === so.customerId);
   const wh = seed.warehouses.find((w) => w.id === so.warehouseId);
-  const supplier = seed.suppliers[0];
+  const supplier = seed.suppliers[1] || seed.suppliers[0];
   const paidInv = seed.invoices.find((i) => (i.payments || []).length > 0);
   const firstPayment = paidInv?.payments?.[0];
   assert.ok(so && customer && wh && supplier && paidInv && firstPayment);
@@ -78,11 +79,25 @@ test('Unified print model generates SO, Surat Jalan, Kwitansi, and Verified Part
   assert.equal(kwtDoc.docType, 'KWITANSI');
   assert.ok(kwtDoc.statusBanner);
 
-  const supReg = buildSupplierRegistrationPrintDoc(supplier, seed.settings);
+  const supReg = buildSupplierRegistrationPrintDoc(
+    { ...supplier, code: 'SUP-002', createdAt: '2026-11-27T08:00:00Z' },
+    seed.settings
+  );
   assert.equal(supReg.docType, 'REG_SUPPLIER');
-  assert.ok(supReg.qrVerification.payload.startsWith('DHI-REG-SUP|'));
+  assert.equal(supReg.documentNumber, 'REG-2026-002');
+  assert.equal(supReg.leftMeta[0]?.value, 'REG-2026-002');
+  assert.equal(supReg.qrVerification.code, 'REG-2026-002');
+  assert.ok(supReg.qrVerification.payload.startsWith('DHI-REG-SUP|REG-2026-002|'));
 
-  const buyReg = buildBuyerRegistrationPrintDoc(customer, seed.settings);
+  const buyReg = buildBuyerRegistrationPrintDoc(
+    { ...customer, code: 'CUST-004', createdAt: '2026-11-27T08:00:00Z' },
+    seed.settings
+  );
   assert.equal(buyReg.docType, 'REG_BUYER');
-  assert.ok(buyReg.qrVerification.payload.startsWith('DHI-REG-BUY|'));
+  assert.equal(buyReg.documentNumber, 'REG-2026-004');
+  assert.ok(buyReg.qrVerification.payload.startsWith('DHI-REG-BUY|REG-2026-004|'));
+
+  assert.equal(formatPartnerRegistrationNumber('SUP-2026-009', 'sup-9', '2026-05-10'), 'REG-2026-009');
+  assert.equal(formatPartnerRegistrationNumber('CUS-001', 'cust-1', '2026-05-02'), 'REG-2026-001');
+  assert.equal(formatPartnerRegistrationNumber(undefined, 'sup-2', '2026-05-10'), 'REG-2026-002');
 });

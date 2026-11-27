@@ -514,6 +514,16 @@
   .print-doc-table {
     min-width: 560px;
   }
+  .print-doc-table--compact {
+    min-width: 0;
+  }
+  .print-doc-table--compact thead th {
+    white-space: normal;
+  }
+  .print-doc-table--compact th:first-child,
+  .print-doc-table--compact td:first-child {
+    width: 40%;
+  }
   .print-doc-signatures {
     grid-template-columns: minmax(0, 1fr) !important;
     gap: 16px;
