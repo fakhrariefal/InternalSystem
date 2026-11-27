@@ -68,7 +68,7 @@ export function PrintableDocumentSheet({ data }: { data: PrintableDocumentData }
 
   return (
     <article
-      className="print-doc-sheet"
+      className={`print-doc-sheet ${data.orientation === 'landscape' ? 'print-doc-sheet--landscape' : ''}`}
       data-doc-type={data.docType}
       data-doc-number={data.documentNumber}
       aria-label={`Dokumen cetak ${data.documentNumber}`}
@@ -334,13 +334,17 @@ export function PrintDocumentProvider({ children }: { children: ReactNode }) {
             aria-modal="true"
             aria-label={`Pratinjau Cetak ${request.data.documentNumber}`}
           >
-            <div className="print-doc-toolbar no-print">
+            <div
+              className={`print-doc-toolbar no-print ${
+                request.data.orientation === 'landscape' ? 'print-doc-toolbar--landscape' : ''
+              }`}
+            >
               <div>
                 <div className="text-sm font-semibold text-white">
                   Pratinjau Cetak Dokumen — {request.data.documentNumber}
                 </div>
                 <div className="text-[11px] text-slate-300">
-                  Tata letak A4 terstandarisasi · Titik dua sejajar · Teks penuh · Barcode di bagian paling bawah
+                  Tata letak A4 {request.data.orientation === 'landscape' ? 'Landscape' : 'Portrait'} · Periksa isi dokumen sebelum cetak atau unduh PDF
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">

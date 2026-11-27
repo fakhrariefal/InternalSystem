@@ -1,5 +1,8 @@
-import { Download, FileSpreadsheet, FileText } from 'lucide-react';
+import { Download, FileSpreadsheet, Printer } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { toast } from 'sonner';
+import { usePrintDocument } from '../components/PrintableDocumentModal';
+import { BulkActionBar, SelectCheckbox } from '../components/ui/BulkActions';
 import {
   Button,
   Card,
@@ -10,6 +13,7 @@ import {
   StatusLabel,
 } from '../components/ui/primitives';
 import type { ErpController } from '../controllers/useErpController';
+import { useBulkSelection } from '../hooks/useBulkSelection';
 import { useI18n } from '../lib/i18n';
 import {
   computeBudgetVsActual,
@@ -23,6 +27,7 @@ import {
   getTotalProductStock,
   isCompanyPkp,
 } from '../models/erpLogic';
+import { buildTableReportPrintDoc } from '../models/printDocumentModel';
 import {
   exportIncomeStatementPdf,
   exportMonthlyPerformancePdf,
@@ -46,6 +51,7 @@ type ReportKind =
 export function ReportsView({ erp }: { erp: ErpController }) {
   const { state } = erp;
   const { lang, tr } = useI18n();
+  const { openPrintPreview } = usePrintDocument();
   const rate = state.settings.defaultExchangeRateUsdIdr;
   const companyIsPkp = isCompanyPkp(state.settings);
   const effectiveTaxRate = getEffectiveTaxRatePercent(state.settings);
@@ -226,6 +232,7 @@ export function ReportsView({ erp }: { erp: ErpController }) {
   ];
 
   const monthlyPerformanceRows = monthlyPerformance.months.map((m) => ({
+    monthKey: m.monthKey,
     Bulan: m.monthLabel,
     OmzetIDR: m.revenueIdr,
     HPPIDR: m.cogsIdr,
@@ -238,6 +245,185 @@ export function ReportsView({ erp }: { erp: ErpController }) {
     JumlahSO: m.soCount,
     NilaiSOIDR: m.soTotalIdr,
   }));
+
+  const activeRowIds = useMemo(() => {
+    switch (activeReport) {
+      case 'valuation':
+        return valuationRows.map((r) => `val:${r.SKU}`);
+      case 'movement':
+        return movementRows.map((r) => `mov:${r.Nomor}`);
+      case 'purchase':
+        return purchaseRows.map((r) => `po:${r.NomorPO}`);
+      case 'sales':
+        return salesRows.map((r) => `so:${r.NomorSO}`);
+      case 'aging':
+        return agingRows.map((r) => `age:${r.Invoice}`);
+      case 'vat_reconciliation':
+        return vatSummary.details.map((d) => `vat:${d.id}`);
+      case 'budget_vs_actual':
+        return budgetRows.map((b) => `bdg:${b.periodKey}`);
+      case 'monthly_performance':
+        return monthlyPerformanceRows.map((m) => `mp:${m.monthKey}`);
+      default:
+        return [];
+    }
+  }, [
+    activeReport,
+    agingRows,
+    budgetRows,
+    monthlyPerformanceRows,
+    movementRows,
+    purchaseRows,
+    salesRows,
+    valuationRows,
+    vatSummary.details,
+  ]);
+
+  const rowSelection = useBulkSelection(activeRowIds);
+
+  const exportSelectedReportRows = (mode: 'csv' | 'excel') => {
+    const sel = rowSelection.selectedIds;
+    if (sel.size === 0) return;
+
+    if (activeReport === 'valuation') {
+      const picked = valuationRows.filter((r) => sel.has(`val:${r.SKU}`));
+      if (mode === 'csv') {
+        exportTableToCsv(
+          'Stock_Valuation_Terpilih',
+          ['SKU', 'Produk', 'Kategori', 'Satuan', 'Total Stok', 'Harga Beli (IDR)', 'Nilai Stok (IDR)'],
+          picked.map((r) => [r.SKU, r.Produk, r.Kategori, r.Satuan, r.TotalStok, r.HargaBeliIDR, r.NilaiStokIDR])
+        );
+      } else {
+        exportTableToExcel('Stock_Valuation_Terpilih', 'Stock Valuation', picked);
+      }
+      toast.success(`${picked.length} baris Stock Valuation diekspor.`);
+      return;
+    }
+    if (activeReport === 'movement') {
+      const picked = movementRows.filter((r) => sel.has(`mov:${r.Nomor}`));
+      if (mode === 'csv') {
+        exportTableToCsv(
+          'Inventory_Movement_Terpilih',
+          ['Nomor', 'Tipe', 'SKU', 'Produk', 'Gudang', 'Delta', 'Stok Akhir', 'Tanggal'],
+          picked.map((r) => [r.Nomor, r.Tipe, r.SKU, r.Produk, r.Gudang, r.Delta, r.StokAkhir, r.Tanggal])
+        );
+      } else {
+        exportTableToExcel('Inventory_Movement_Terpilih', 'Movements', picked);
+      }
+      toast.success(`${picked.length} baris mutasi diekspor.`);
+      return;
+    }
+    if (activeReport === 'purchase') {
+      const picked = purchaseRows.filter((r) => sel.has(`po:${r.NomorPO}`));
+      if (mode === 'csv') {
+        exportTableToCsv(
+          'Purchase_Report_Terpilih',
+          ['Nomor PO', 'Supplier', 'Gudang', 'Mata Uang', 'Total', 'Ekuivalen IDR', 'Status', 'Tanggal'],
+          picked.map((r) => [r.NomorPO, r.Supplier, r.Gudang, r.MataUang, r.Total, r.EkuivalenIDR, r.Status, r.Tanggal])
+        );
+      } else {
+        exportTableToExcel('Purchase_Report_Terpilih', 'Purchases', picked);
+      }
+      toast.success(`${picked.length} baris Purchase Report diekspor.`);
+      return;
+    }
+    if (activeReport === 'sales') {
+      const picked = salesRows.filter((r) => sel.has(`so:${r.NomorSO}`));
+      if (mode === 'csv') {
+        exportTableToCsv(
+          'Sales_Report_Terpilih',
+          ['Nomor SO', 'Customer', 'Gudang', 'Mata Uang', 'Total', 'Status', 'Jatuh Tempo'],
+          picked.map((r) => [r.NomorSO, r.Customer, r.Gudang, r.MataUang, r.Total, r.Status, r.JatuhTempo])
+        );
+      } else {
+        exportTableToExcel('Sales_Report_Terpilih', 'Sales', picked);
+      }
+      toast.success(`${picked.length} baris Sales Report diekspor.`);
+      return;
+    }
+    if (activeReport === 'aging') {
+      const picked = agingRows.filter((r) => sel.has(`age:${r.Invoice}`));
+      if (mode === 'csv') {
+        exportTableToCsv(
+          'Aging_Terpilih',
+          ['Invoice', 'Tipe', 'Partner', 'Jatuh Tempo', 'Umur', 'Sisa Tagihan (IDR)', 'Status'],
+          picked.map((r) => [r.Invoice, r.Tipe, r.Partner, r.JatuhTempo, r.BucketUmur, r.SisaTagihanIDR, r.Status])
+        );
+      } else {
+        exportTableToExcel('Aging_Terpilih', 'Aging', picked);
+      }
+      toast.success(`${picked.length} baris Aging diekspor.`);
+      return;
+    }
+    if (activeReport === 'vat_reconciliation') {
+      const picked = vatSummary.details.filter((d) => sel.has(`vat:${d.id}`));
+      if (mode === 'csv') {
+        exportTableToCsv(
+          `Rekap_PPN_${vatMonth}_Terpilih`,
+          ['Tanggal', 'No Dokumen', 'Faktur Pajak', 'Jenis', 'Partner', 'DPP (IDR)', 'PPN (IDR)'],
+          picked.map((d) => [d.date, d.docNumber, d.taxInvoiceNumber || '-', d.type, d.counterpartyName, d.dppIdr, d.vatIdr])
+        );
+      } else {
+        exportTableToExcel(
+          `Rekap_PPN_${vatMonth}_Terpilih`,
+          'Rekonsiliasi PPN',
+          picked.map((d) => ({
+            Tanggal: d.date,
+            NoDokumen: d.docNumber,
+            FakturPajak: d.taxInvoiceNumber || '-',
+            Jenis: d.type,
+            Partner: d.counterpartyName,
+            DPP_IDR: d.dppIdr,
+            PPN_IDR: d.vatIdr,
+          }))
+        );
+      }
+      toast.success(`${picked.length} baris Rekonsiliasi PPN diekspor.`);
+      return;
+    }
+    if (activeReport === 'budget_vs_actual') {
+      const picked = budgetRows.filter((b) => sel.has(`bdg:${b.periodKey}`));
+      if (mode === 'csv') {
+        exportTableToCsv(
+          'Budget_vs_Actual_Terpilih',
+          ['Periode', 'Target Omzet (IDR)', 'Aktual Omzet (IDR)', 'Capaian (%)', 'Aktual HPP (IDR)', 'Aktual OpEx (IDR)', 'Target Laba (IDR)', 'Aktual Laba (IDR)'],
+          picked.map((b) => [b.monthLabel, b.targetRevenueIdr, b.actualRevenueIdr, Number(b.revenueAttainmentPercent.toFixed(1)), b.actualCogsIdr, b.actualOpexIdr, b.targetNetIncomeIdr, b.actualNetIncomeIdr])
+        );
+      } else {
+        exportTableToExcel(
+          'Budget_vs_Actual_Terpilih',
+          'Budget vs Actual',
+          picked.map((b) => ({
+            Periode: b.monthLabel,
+            TargetOmzetIDR: b.targetRevenueIdr,
+            AktualOmzetIDR: b.actualRevenueIdr,
+            CapaianPersen: Number(b.revenueAttainmentPercent.toFixed(1)),
+            AktualHPPIDR: b.actualCogsIdr,
+            MaxHPPIDR: b.maxCogsIdr,
+            AktualOpExIDR: b.actualOpexIdr,
+            MaxOpExIDR: b.maxOpexIdr,
+            TargetLabaIDR: b.targetNetIncomeIdr,
+            AktualLabaIDR: b.actualNetIncomeIdr,
+          }))
+        );
+      }
+      toast.success(`${picked.length} periode Budget diekspor.`);
+      return;
+    }
+    if (activeReport === 'monthly_performance') {
+      const picked = monthlyPerformanceRows.filter((m) => sel.has(`mp:${m.monthKey}`));
+      if (mode === 'csv') {
+        exportTableToCsv(
+          'Performa_Bulanan_Terpilih',
+          ['Bulan', 'Omzet (IDR)', 'HPP (IDR)', 'Laba Kotor (IDR)', 'Margin Kotor (%)', 'Beban OpEx (IDR)', 'Laba Bersih (IDR)', 'Nilai PO (IDR)', 'Nilai SO (IDR)'],
+          picked.map((r) => [r.Bulan, r.OmzetIDR, r.HPPIDR, r.LabaKotorIDR, r.MarginKotorPersen, r.BebanOpExIDR, r.LabaBersihIDR, r.NilaiPOIDR, r.NilaiSOIDR])
+        );
+      } else {
+        exportTableToExcel('Performa_Bulanan_Terpilih', 'Performa Bulanan', picked);
+      }
+      toast.success(`${picked.length} bulan performa diekspor.`);
+    }
+  };
 
   const handleExportCsv = () => {
     if (activeReport === 'valuation') {
@@ -377,17 +563,121 @@ export function ReportsView({ erp }: { erp: ErpController }) {
     }
   };
 
-  const handleExportPdf = () => {
+  const handleOpenPrintPreview = () => {
+    const todayStr = new Date().toLocaleDateString('id-ID');
     if (activeReport === 'income_statement') {
-      exportIncomeStatementPdf(incomeStatement, state.settings, 'Semua Periode Berjalan');
+      openPrintPreview(
+        buildTableReportPrintDoc({
+          documentTitle: 'LAPORAN LABA RUGI (INCOME STATEMENT)',
+          documentNumber: `LR-${new Date().toISOString().slice(0, 7).replace('-', '')}`,
+          filenameBase: 'Laporan_Laba_Rugi',
+          subtitle: 'Semua Periode Berjalan',
+          company: state.settings,
+          orientation: 'portrait',
+          columns: [
+            { header: 'Bagian', align: 'left' },
+            { header: 'Kode', align: 'left', mono: true },
+            { header: 'Pos Akun / Keterangan', align: 'left' },
+            { header: 'Nominal (IDR)', align: 'right', mono: true, bold: true },
+          ],
+          rows: incomeStatementRows.map((r) => [r.Bagian, r.KodeAkun, r.NamaAkun, formatCurrency(r.NominalIDR)]),
+          totals: [
+            { label: 'Total Pendapatan', value: formatCurrency(incomeStatement.totalRevenueIdr) },
+            { label: 'Laba Kotor', value: formatCurrency(incomeStatement.grossProfitIdr) },
+            {
+              label: 'Laba Bersih',
+              value: formatCurrency(incomeStatement.netIncomeIdr),
+              isGrandTotal: true,
+              tone: incomeStatement.netIncomeIdr >= 0 ? 'success' : 'accent',
+            },
+          ],
+        }),
+        () => exportIncomeStatementPdf(incomeStatement, state.settings, 'Semua Periode Berjalan')
+      );
       return;
     }
+
     if (activeReport === 'monthly_performance') {
-      exportMonthlyPerformancePdf(monthlyPerformance, state.settings);
+      openPrintPreview(
+        buildTableReportPrintDoc({
+          documentTitle: 'LAPORAN PERFORMA BULANAN (MONTHLY PERFORMANCE)',
+          documentNumber: `PERF-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`,
+          filenameBase: 'Performa_Bulanan_Report',
+          subtitle: `Akumulasi ${monthlyPerformance.months.length} bulan`,
+          company: state.settings,
+          orientation: 'landscape',
+          columns: [
+            { header: 'Bulan', align: 'left', bold: true },
+            { header: 'Omzet (IDR)', align: 'right', mono: true },
+            { header: 'HPP (IDR)', align: 'right', mono: true },
+            { header: 'Laba Kotor', align: 'right', mono: true },
+            { header: 'Margin %', align: 'right', mono: true },
+            { header: 'Beban OpEx', align: 'right', mono: true },
+            { header: 'Laba Bersih', align: 'right', mono: true, bold: true },
+            { header: 'Nilai PO', align: 'right', mono: true },
+            { header: 'Nilai SO', align: 'right', mono: true },
+          ],
+          rows: monthlyPerformance.months.map((m) => [
+            m.monthLabel,
+            formatCurrency(m.revenueIdr),
+            formatCurrency(m.cogsIdr),
+            formatCurrency(m.grossProfitIdr),
+            `${m.grossMarginPercent.toFixed(1)}%`,
+            formatCurrency(m.operatingExpensesIdr),
+            formatCurrency(m.netIncomeIdr),
+            formatCurrency(m.poTotalIdr),
+            formatCurrency(m.soTotalIdr),
+          ]),
+          totals: [
+            { label: 'Total Omzet', value: formatCurrency(monthlyPerformance.totalRevenueIdr) },
+            {
+              label: 'Total Laba Bersih',
+              value: formatCurrency(monthlyPerformance.totalNetIncomeIdr),
+              isGrandTotal: true,
+              tone: monthlyPerformance.totalNetIncomeIdr >= 0 ? 'success' : 'accent',
+            },
+          ],
+        }),
+        () => exportMonthlyPerformancePdf(monthlyPerformance, state.settings)
+      );
       return;
     }
+
     if (activeReport === 'vat_reconciliation') {
-      exportVatReconciliationPdf(vatSummary, state.settings);
+      openPrintPreview(
+        buildTableReportPrintDoc({
+          documentTitle: `LAPORAN REKONSILIASI PPN (${companyIsPkp ? `PKP ${effectiveTaxRate}%` : 'Non-PKP 0%'})`,
+          documentNumber: `PPN-${vatMonth}`,
+          filenameBase: `Rekap_PPN_${vatMonth}`,
+          subtitle: `Net PPN (${vatSummary.statusLabel}): ${formatCurrency(Math.abs(vatSummary.netVatPayableIdr))}`,
+          company: state.settings,
+          orientation: 'landscape',
+          columns: [
+            { header: 'Tanggal', align: 'left', mono: true },
+            { header: 'No. Dokumen', align: 'left', mono: true, bold: true },
+            { header: 'Faktur Pajak', align: 'left', mono: true },
+            { header: 'Jenis', align: 'left' },
+            { header: 'Partner', align: 'left' },
+            { header: 'DPP (IDR)', align: 'right', mono: true },
+            { header: 'PPN (IDR)', align: 'right', mono: true, bold: true },
+          ],
+          rows: vatSummary.details.map((d) => [
+            d.date,
+            d.docNumber,
+            d.taxInvoiceNumber || '-',
+            d.type,
+            d.counterpartyName,
+            formatCurrency(d.dppIdr),
+            formatCurrency(d.vatIdr),
+          ]),
+          totals: [
+            { label: 'PPN Keluaran Netto', value: formatCurrency(vatSummary.netPpnKeluaranIdr) },
+            { label: 'PPN Masukan Netto', value: formatCurrency(vatSummary.netPpnMasukanIdr) },
+            { label: `Net PPN (${vatSummary.statusLabel})`, value: formatCurrency(Math.abs(vatSummary.netVatPayableIdr)), isGrandTotal: true },
+          ],
+        }),
+        () => exportVatReconciliationPdf(vatSummary, state.settings)
+      );
       return;
     }
 
@@ -478,15 +768,28 @@ export function ReportsView({ erp }: { erp: ErpController }) {
     };
 
     const cfg = configs[activeReport];
-    exportTableToPdf({
-      filename: `DomestiqHub_${activeReport}_Report`,
-      title: cfg.title,
-      subtitle: `Dicetak pada ${new Date().toLocaleDateString('id-ID')}`,
-      headers: cfg.headers,
-      rows: cfg.rows,
-      company: state.settings,
-      orientation: activeReport === 'budget_vs_actual' ? 'landscape' : 'portrait',
-    });
+    openPrintPreview(
+      buildTableReportPrintDoc({
+        documentTitle: cfg.title.toUpperCase(),
+        documentNumber: `RPT-${activeReport.toUpperCase()}`,
+        filenameBase: `DomestiqHub_${activeReport}_Report`,
+        subtitle: `Dicetak pada ${todayStr}`,
+        company: state.settings,
+        orientation: cfg.headers.length >= 6 ? 'landscape' : 'portrait',
+        columns: cfg.headers.map((h) => ({ header: h, align: 'left' })),
+        rows: cfg.rows.map((r) => r.map((cell) => String(cell))),
+      }),
+      () =>
+        exportTableToPdf({
+          filename: `DomestiqHub_${activeReport}_Report`,
+          title: cfg.title,
+          subtitle: `Dicetak pada ${todayStr}`,
+          headers: cfg.headers,
+          rows: cfg.rows,
+          company: state.settings,
+          orientation: activeReport === 'budget_vs_actual' ? 'landscape' : 'portrait',
+        })
+    );
   };
 
   return (
@@ -498,23 +801,23 @@ export function ReportsView({ erp }: { erp: ErpController }) {
           </h2>
           <p className="text-xs sm:text-sm text-slate-600">
             {tr(
-              'Valuasi stok, pergerakan barang, pembelian, penjualan, aging, laba rugi, dan performa bulanan (CSV, Excel & PDF).',
-              'Stock valuation, warehouse movements, procurement, sales, aging, income statement, and monthly performance (CSV, Excel & PDF).'
+              'Valuasi stok, pergerakan barang, pembelian, penjualan, aging, laba rugi, dan performa bulanan (CSV, Excel & Cetak Preview).',
+              'Stock valuation, warehouse movements, procurement, sales, aging, income statement, and monthly performance (CSV, Excel & Print Preview).'
             )}
           </p>
         </div>
-        <div className="grid grid-cols-3 sm:flex sm:flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button type="button" variant="outline" size="sm" onClick={handleExportCsv}>
-            <Download className="h-4 w-4 text-slate-700" />
+            <Download className="h-4 w-4 shrink-0 text-slate-700" />
             CSV
           </Button>
           <Button type="button" variant="outline" size="sm" onClick={handleExportExcel}>
-            <FileSpreadsheet className="h-4 w-4 text-emerald-700" />
+            <FileSpreadsheet className="h-4 w-4 shrink-0 text-emerald-700" />
             Excel
           </Button>
-          <Button type="button" variant="default" size="sm" onClick={handleExportPdf}>
-            <FileText className="h-4 w-4" />
-            PDF
+          <Button type="button" variant="default" size="sm" onClick={handleOpenPrintPreview}>
+            <Printer className="h-4 w-4 shrink-0" />
+            Cetak Preview
           </Button>
         </div>
       </div>
@@ -618,17 +921,68 @@ export function ReportsView({ erp }: { erp: ErpController }) {
         </div>
       )}
 
+      {/* Bulk Selection Bar */}
+      {activeRowIds.length > 0 && (
+        <BulkActionBar
+          selectedCount={rowSelection.selectedCount}
+          itemLabel="baris laporan"
+          onClear={rowSelection.clearSelection}
+          actions={[
+            {
+              id: 'bulk-csv',
+              label: 'Export Terpilih CSV',
+              icon: <Download className="h-3.5 w-3.5" />,
+              variant: 'outline',
+              onClick: () => exportSelectedReportRows('csv'),
+            },
+            {
+              id: 'bulk-excel',
+              label: 'Export Terpilih Excel',
+              icon: <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-700" />,
+              variant: 'outline',
+              onClick: () => exportSelectedReportRows('excel'),
+            },
+          ]}
+        />
+      )}
+
       {/* Mobile Card List View for Reports */}
       <div className="space-y-3 md:hidden">
+        {activeRowIds.length > 0 && (
+          <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs">
+            <label className="inline-flex items-center gap-2 font-medium text-slate-700 cursor-pointer">
+              <SelectCheckbox
+                checked={rowSelection.allVisibleSelected}
+                indeterminate={rowSelection.someVisibleSelected}
+                onChange={rowSelection.toggleAllVisible}
+                ariaLabel="Pilih semua baris laporan"
+              />
+              <span>Pilih Semua ({activeRowIds.length})</span>
+            </label>
+            {rowSelection.selectedCount > 0 && (
+              <span className="font-mono font-semibold text-[#154C7E]">
+                {rowSelection.selectedCount} dipilih
+              </span>
+            )}
+          </div>
+        )}
+        <div className="space-y-3 max-h-[540px] overflow-y-auto pr-1">
         {activeReport === 'valuation' &&
           valuationRows.map((r) => (
-            <Card key={`m_val_${r.SKU}`}>
+            <Card key={`m_val_${r.SKU}`} className={rowSelection.isSelected(`val:${r.SKU}`) ? 'ring-2 ring-[#1B5E99]/40 bg-[#EFF5FB]/40' : ''}>
               <CardContent className="p-4 space-y-2 text-xs">
                 <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="font-semibold text-[#0B1B3A]">{r.Produk}</div>
-                    <div className="text-[11px] font-mono text-slate-500">
-                      {r.SKU} · {r.Kategori}
+                  <div className="flex items-start gap-2.5">
+                    <SelectCheckbox
+                      checked={rowSelection.isSelected(`val:${r.SKU}`)}
+                      onChange={() => rowSelection.toggleOne(`val:${r.SKU}`)}
+                      ariaLabel={`Pilih ${r.SKU}`}
+                    />
+                    <div>
+                      <div className="font-semibold text-[#0B1B3A]">{r.Produk}</div>
+                      <div className="text-[11px] font-mono text-slate-500">
+                        {r.SKU} · {r.Kategori}
+                      </div>
                     </div>
                   </div>
                   <span className="font-mono font-bold text-[#0B1B3A]">
@@ -653,10 +1007,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
 
         {activeReport === 'movement' &&
           movementRows.map((r) => (
-            <Card key={`m_rmov_${r.Nomor}`}>
+            <Card key={`m_rmov_${r.Nomor}`} className={rowSelection.isSelected(`mov:${r.Nomor}`) ? 'ring-2 ring-[#1B5E99]/40 bg-[#EFF5FB]/40' : ''}>
               <CardContent className="p-4 space-y-2 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="font-mono font-bold text-[#0B1B3A]">{r.Nomor}</span>
+                  <div className="flex items-center gap-2">
+                    <SelectCheckbox
+                      checked={rowSelection.isSelected(`mov:${r.Nomor}`)}
+                      onChange={() => rowSelection.toggleOne(`mov:${r.Nomor}`)}
+                      ariaLabel={`Pilih mutasi ${r.Nomor}`}
+                    />
+                    <span className="font-mono font-bold text-[#0B1B3A]">{r.Nomor}</span>
+                  </div>
                   <span className="font-mono text-[11px] text-slate-500">{r.Tanggal}</span>
                 </div>
                 <div className="font-medium text-slate-800">{r.Produk}</div>
@@ -670,10 +1031,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
 
         {activeReport === 'purchase' &&
           purchaseRows.map((r) => (
-            <Card key={`m_rpo_${r.NomorPO}`}>
+            <Card key={`m_rpo_${r.NomorPO}`} className={rowSelection.isSelected(`po:${r.NomorPO}`) ? 'ring-2 ring-[#1B5E99]/40 bg-[#EFF5FB]/40' : ''}>
               <CardContent className="p-4 space-y-2 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="font-mono font-bold text-[#0B1B3A]">{r.NomorPO}</span>
+                  <div className="flex items-center gap-2">
+                    <SelectCheckbox
+                      checked={rowSelection.isSelected(`po:${r.NomorPO}`)}
+                      onChange={() => rowSelection.toggleOne(`po:${r.NomorPO}`)}
+                      ariaLabel={`Pilih ${r.NomorPO}`}
+                    />
+                    <span className="font-mono font-bold text-[#0B1B3A]">{r.NomorPO}</span>
+                  </div>
                   <span className="text-[11px] font-medium text-[#1B5E99]">{r.Status}</span>
                 </div>
                 <div className="font-medium text-slate-800">{r.Supplier}</div>
@@ -697,10 +1065,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
 
         {activeReport === 'sales' &&
           salesRows.map((r) => (
-            <Card key={`m_rso_${r.NomorSO}`}>
+            <Card key={`m_rso_${r.NomorSO}`} className={rowSelection.isSelected(`so:${r.NomorSO}`) ? 'ring-2 ring-[#1B5E99]/40 bg-[#EFF5FB]/40' : ''}>
               <CardContent className="p-4 space-y-2 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="font-mono font-bold text-[#0B1B3A]">{r.NomorSO}</span>
+                  <div className="flex items-center gap-2">
+                    <SelectCheckbox
+                      checked={rowSelection.isSelected(`so:${r.NomorSO}`)}
+                      onChange={() => rowSelection.toggleOne(`so:${r.NomorSO}`)}
+                      ariaLabel={`Pilih ${r.NomorSO}`}
+                    />
+                    <span className="font-mono font-bold text-[#0B1B3A]">{r.NomorSO}</span>
+                  </div>
                   <span className="text-[11px] font-medium text-[#1B5E99]">{r.Status}</span>
                 </div>
                 <div className="font-medium text-slate-800">{r.Customer}</div>
@@ -716,12 +1091,19 @@ export function ReportsView({ erp }: { erp: ErpController }) {
 
         {activeReport === 'aging' &&
           agingRows.map((r) => (
-            <Card key={`m_rag_${r.Invoice}`}>
+            <Card key={`m_rag_${r.Invoice}`} className={rowSelection.isSelected(`age:${r.Invoice}`) ? 'ring-2 ring-[#1B5E99]/40 bg-[#EFF5FB]/40' : ''}>
               <CardContent className="p-4 space-y-2 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="font-mono font-bold text-[#0B1B3A]">
-                    {r.Invoice} ({r.Tipe})
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <SelectCheckbox
+                      checked={rowSelection.isSelected(`age:${r.Invoice}`)}
+                      onChange={() => rowSelection.toggleOne(`age:${r.Invoice}`)}
+                      ariaLabel={`Pilih ${r.Invoice}`}
+                    />
+                    <span className="font-mono font-bold text-[#0B1B3A]">
+                      {r.Invoice} ({r.Tipe})
+                    </span>
+                  </div>
                   <span className="text-[11px] font-semibold text-amber-700">{r.BucketUmur}</span>
                 </div>
                 <div className="font-medium text-slate-800">{r.Partner}</div>
@@ -779,10 +1161,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
         {activeReport === 'monthly_performance' && (
           <div className="space-y-3">
             {monthlyPerformance.months.map((m) => (
-              <Card key={`m_mp_${m.monthKey}`}>
+              <Card key={`m_mp_${m.monthKey}`} className={rowSelection.isSelected(`mp:${m.monthKey}`) ? 'ring-2 ring-[#1B5E99]/40 bg-[#EFF5FB]/40' : ''}>
                 <CardContent className="p-4 space-y-2.5 text-xs">
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-[#0B1B3A] text-sm">{m.monthLabel}</span>
+                    <div className="flex items-center gap-2">
+                      <SelectCheckbox
+                        checked={rowSelection.isSelected(`mp:${m.monthKey}`)}
+                        onChange={() => rowSelection.toggleOne(`mp:${m.monthKey}`)}
+                        ariaLabel={`Pilih ${m.monthLabel}`}
+                      />
+                      <span className="font-bold text-[#0B1B3A] text-sm">{m.monthLabel}</span>
+                    </div>
                     <span className="font-mono font-semibold text-emerald-700">
                       Margin {m.grossMarginPercent.toFixed(1)}%
                     </span>
@@ -822,10 +1211,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
         {activeReport === 'vat_reconciliation' && (
           <div className="space-y-3">
             {vatSummary.details.map((d) => (
-              <Card key={`m_vat_${d.id}`}>
+              <Card key={`m_vat_${d.id}`} className={rowSelection.isSelected(`vat:${d.id}`) ? 'ring-2 ring-[#1B5E99]/40 bg-[#EFF5FB]/40' : ''}>
                 <CardContent className="p-4 space-y-2 text-xs">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono font-bold text-[#0B1B3A]">{d.docNumber}</span>
+                    <div className="flex items-center gap-2">
+                      <SelectCheckbox
+                        checked={rowSelection.isSelected(`vat:${d.id}`)}
+                        onChange={() => rowSelection.toggleOne(`vat:${d.id}`)}
+                        ariaLabel={`Pilih dokumen pajak ${d.docNumber}`}
+                      />
+                      <span className="font-mono font-bold text-[#0B1B3A]">{d.docNumber}</span>
+                    </div>
                     <StatusLabel
                       status={d.type}
                       tone={
@@ -871,10 +1267,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
               </Card>
             ) : (
               budgetRows.map((b) => (
-                <Card key={`m_bdg_${b.periodKey}`}>
+                <Card key={`m_bdg_${b.periodKey}`} className={rowSelection.isSelected(`bdg:${b.periodKey}`) ? 'ring-2 ring-[#1B5E99]/40 bg-[#EFF5FB]/40' : ''}>
                   <CardContent className="p-4 space-y-2 text-xs">
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-[#0B1B3A] text-sm">{b.monthLabel}</span>
+                      <div className="flex items-center gap-2">
+                        <SelectCheckbox
+                          checked={rowSelection.isSelected(`bdg:${b.periodKey}`)}
+                          onChange={() => rowSelection.toggleOne(`bdg:${b.periodKey}`)}
+                          ariaLabel={`Pilih budget ${b.monthLabel}`}
+                        />
+                        <span className="font-bold text-[#0B1B3A] text-sm">{b.monthLabel}</span>
+                      </div>
                       <StatusLabel
                         status={`${b.revenueAttainmentPercent.toFixed(1)}% Omzet`}
                         tone={b.revenueAttainmentPercent >= 90 ? 'success' : 'warning'}
@@ -900,11 +1303,12 @@ export function ReportsView({ erp }: { erp: ErpController }) {
             )}
           </div>
         )}
+        </div>
       </div>
 
       {/* Desktop Report Table */}
       <Card className="hidden md:block">
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle>
             {activeReport === 'valuation' && 'Stock Valuation Report'}
             {activeReport === 'movement' && 'Inventory Movement Report'}
@@ -917,14 +1321,33 @@ export function ReportsView({ erp }: { erp: ErpController }) {
               `Laporan Rekonsiliasi PPN Masukan vs Keluaran (${companyIsPkp ? `PKP ${effectiveTaxRate}%` : 'Non-PKP 0%'})`}
             {activeReport === 'budget_vs_actual' && 'Laporan Target & Realisasi Budget Bulanan (Budget vs Actual)'}
           </CardTitle>
+          {activeRowIds.length > 0 && (
+            <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600 cursor-pointer">
+              <SelectCheckbox
+                checked={rowSelection.allVisibleSelected}
+                indeterminate={rowSelection.someVisibleSelected}
+                onChange={rowSelection.toggleAllVisible}
+                ariaLabel="Pilih semua baris laporan"
+              />
+              <span>Pilih Semua ({activeRowIds.length})</span>
+            </label>
+          )}
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <div className="max-h-[520px] overflow-auto">
             {activeReport === 'valuation' && (
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-slate-600 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4">SKU</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={rowSelection.allVisibleSelected}
+                        indeterminate={rowSelection.someVisibleSelected}
+                        onChange={rowSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua valuasi stok"
+                      />
+                    </th>
+                    <th className="py-3 px-3">SKU</th>
                     <th className="py-3 px-3">Produk</th>
                     <th className="py-3 px-3">Kategori</th>
                     <th className="py-3 px-3 text-right">Total Stok</th>
@@ -934,8 +1357,15 @@ export function ReportsView({ erp }: { erp: ErpController }) {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {valuationRows.map((r) => (
-                    <tr key={r.SKU}>
-                      <td className="py-2.5 px-4 font-mono">{r.SKU}</td>
+                    <tr key={r.SKU} className={rowSelection.isSelected(`val:${r.SKU}`) ? 'bg-[#EFF5FB]/70' : 'hover:bg-slate-50/70'}>
+                      <td className="py-2.5 pl-4 pr-2">
+                        <SelectCheckbox
+                          checked={rowSelection.isSelected(`val:${r.SKU}`)}
+                          onChange={() => rowSelection.toggleOne(`val:${r.SKU}`)}
+                          ariaLabel={`Pilih ${r.SKU}`}
+                        />
+                      </td>
+                      <td className="py-2.5 px-3 font-mono">{r.SKU}</td>
                       <td className="py-2.5 px-3 font-medium">{r.Produk}</td>
                       <td className="py-2.5 px-3 text-slate-500">{r.Kategori}</td>
                       <td className="py-2.5 px-3 text-right font-mono tabular-nums">
@@ -955,9 +1385,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
 
             {activeReport === 'movement' && (
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-slate-600 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4">Nomor</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={rowSelection.allVisibleSelected}
+                        indeterminate={rowSelection.someVisibleSelected}
+                        onChange={rowSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua mutasi stok"
+                      />
+                    </th>
+                    <th className="py-3 px-3">Nomor</th>
                     <th className="py-3 px-3">Tipe</th>
                     <th className="py-3 px-3">Produk</th>
                     <th className="py-3 px-3">Gudang</th>
@@ -967,8 +1405,15 @@ export function ReportsView({ erp }: { erp: ErpController }) {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {movementRows.map((r) => (
-                    <tr key={r.Nomor}>
-                      <td className="py-2.5 px-4 font-mono">{r.Nomor}</td>
+                    <tr key={r.Nomor} className={rowSelection.isSelected(`mov:${r.Nomor}`) ? 'bg-[#EFF5FB]/70' : 'hover:bg-slate-50/70'}>
+                      <td className="py-2.5 pl-4 pr-2">
+                        <SelectCheckbox
+                          checked={rowSelection.isSelected(`mov:${r.Nomor}`)}
+                          onChange={() => rowSelection.toggleOne(`mov:${r.Nomor}`)}
+                          ariaLabel={`Pilih mutasi ${r.Nomor}`}
+                        />
+                      </td>
+                      <td className="py-2.5 px-3 font-mono">{r.Nomor}</td>
                       <td className="py-2.5 px-3">{r.Tipe}</td>
                       <td className="py-2.5 px-3 font-medium">{r.Produk}</td>
                       <td className="py-2.5 px-3">{r.Gudang}</td>
@@ -982,9 +1427,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
 
             {activeReport === 'purchase' && (
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-slate-600 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4">No. PO</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={rowSelection.allVisibleSelected}
+                        indeterminate={rowSelection.someVisibleSelected}
+                        onChange={rowSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua PO"
+                      />
+                    </th>
+                    <th className="py-3 px-3">No. PO</th>
                     <th className="py-3 px-3">Supplier</th>
                     <th className="py-3 px-3">Status</th>
                     <th className="py-3 px-3 text-right">Total Asli</th>
@@ -993,8 +1446,15 @@ export function ReportsView({ erp }: { erp: ErpController }) {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {purchaseRows.map((r) => (
-                    <tr key={r.NomorPO}>
-                      <td className="py-2.5 px-4 font-mono font-semibold">{r.NomorPO}</td>
+                    <tr key={r.NomorPO} className={rowSelection.isSelected(`po:${r.NomorPO}`) ? 'bg-[#EFF5FB]/70' : 'hover:bg-slate-50/70'}>
+                      <td className="py-2.5 pl-4 pr-2">
+                        <SelectCheckbox
+                          checked={rowSelection.isSelected(`po:${r.NomorPO}`)}
+                          onChange={() => rowSelection.toggleOne(`po:${r.NomorPO}`)}
+                          ariaLabel={`Pilih ${r.NomorPO}`}
+                        />
+                      </td>
+                      <td className="py-2.5 px-3 font-mono font-semibold">{r.NomorPO}</td>
                       <td className="py-2.5 px-3">{r.Supplier}</td>
                       <td className="py-2.5 px-3">{r.Status}</td>
                       <td className="py-2.5 px-3 text-right font-mono tabular-nums">
@@ -1011,9 +1471,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
 
             {activeReport === 'sales' && (
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-slate-600 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4">No. SO</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={rowSelection.allVisibleSelected}
+                        indeterminate={rowSelection.someVisibleSelected}
+                        onChange={rowSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua SO"
+                      />
+                    </th>
+                    <th className="py-3 px-3">No. SO</th>
                     <th className="py-3 px-3">Customer</th>
                     <th className="py-3 px-3">Gudang</th>
                     <th className="py-3 px-3">Status</th>
@@ -1022,8 +1490,15 @@ export function ReportsView({ erp }: { erp: ErpController }) {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {salesRows.map((r) => (
-                    <tr key={r.NomorSO}>
-                      <td className="py-2.5 px-4 font-mono font-semibold">{r.NomorSO}</td>
+                    <tr key={r.NomorSO} className={rowSelection.isSelected(`so:${r.NomorSO}`) ? 'bg-[#EFF5FB]/70' : 'hover:bg-slate-50/70'}>
+                      <td className="py-2.5 pl-4 pr-2">
+                        <SelectCheckbox
+                          checked={rowSelection.isSelected(`so:${r.NomorSO}`)}
+                          onChange={() => rowSelection.toggleOne(`so:${r.NomorSO}`)}
+                          ariaLabel={`Pilih ${r.NomorSO}`}
+                        />
+                      </td>
+                      <td className="py-2.5 px-3 font-mono font-semibold">{r.NomorSO}</td>
                       <td className="py-2.5 px-3">{r.Customer}</td>
                       <td className="py-2.5 px-3">{r.Gudang}</td>
                       <td className="py-2.5 px-3">{r.Status}</td>
@@ -1038,9 +1513,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
 
             {activeReport === 'aging' && (
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-slate-600 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4">Invoice</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={rowSelection.allVisibleSelected}
+                        indeterminate={rowSelection.someVisibleSelected}
+                        onChange={rowSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua invoice aging"
+                      />
+                    </th>
+                    <th className="py-3 px-3">Invoice</th>
                     <th className="py-3 px-3">Jenis</th>
                     <th className="py-3 px-3">Partner</th>
                     <th className="py-3 px-3">Jatuh Tempo</th>
@@ -1050,8 +1533,15 @@ export function ReportsView({ erp }: { erp: ErpController }) {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {agingRows.map((r) => (
-                    <tr key={r.Invoice}>
-                      <td className="py-2.5 px-4 font-mono font-semibold">{r.Invoice}</td>
+                    <tr key={r.Invoice} className={rowSelection.isSelected(`age:${r.Invoice}`) ? 'bg-[#EFF5FB]/70' : 'hover:bg-slate-50/70'}>
+                      <td className="py-2.5 pl-4 pr-2">
+                        <SelectCheckbox
+                          checked={rowSelection.isSelected(`age:${r.Invoice}`)}
+                          onChange={() => rowSelection.toggleOne(`age:${r.Invoice}`)}
+                          ariaLabel={`Pilih ${r.Invoice}`}
+                        />
+                      </td>
+                      <td className="py-2.5 px-3 font-mono font-semibold">{r.Invoice}</td>
                       <td className="py-2.5 px-3 font-mono">{r.Tipe}</td>
                       <td className="py-2.5 px-3">{r.Partner}</td>
                       <td className="py-2.5 px-3 font-mono tabular-nums">{r.JatuhTempo}</td>
@@ -1067,7 +1557,7 @@ export function ReportsView({ erp }: { erp: ErpController }) {
 
             {activeReport === 'income_statement' && (
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-slate-600 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
                     <th className="py-3 px-4">Bagian</th>
                     <th className="py-3 px-3">Kode Akun</th>
@@ -1109,9 +1599,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
 
             {activeReport === 'monthly_performance' && (
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-slate-600 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4">Bulan</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={rowSelection.allVisibleSelected}
+                        indeterminate={rowSelection.someVisibleSelected}
+                        onChange={rowSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua bulan performa"
+                      />
+                    </th>
+                    <th className="py-3 px-3">Bulan</th>
                     <th className="py-3 px-3 text-right">Omzet (IDR)</th>
                     <th className="py-3 px-3 text-right">HPP (IDR)</th>
                     <th className="py-3 px-3 text-right">Laba Kotor</th>
@@ -1124,8 +1622,18 @@ export function ReportsView({ erp }: { erp: ErpController }) {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {monthlyPerformance.months.map((m) => (
-                    <tr key={m.monthKey} className="hover:bg-[#F4F7FB]">
-                      <td className="py-2.5 px-4 font-semibold text-[#0B1B3A]">{m.monthLabel}</td>
+                    <tr
+                      key={m.monthKey}
+                      className={rowSelection.isSelected(`mp:${m.monthKey}`) ? 'bg-[#EFF5FB]/70' : 'hover:bg-[#F4F7FB]'}
+                    >
+                      <td className="py-2.5 pl-4 pr-2">
+                        <SelectCheckbox
+                          checked={rowSelection.isSelected(`mp:${m.monthKey}`)}
+                          onChange={() => rowSelection.toggleOne(`mp:${m.monthKey}`)}
+                          ariaLabel={`Pilih ${m.monthLabel}`}
+                        />
+                      </td>
+                      <td className="py-2.5 px-3 font-semibold text-[#0B1B3A]">{m.monthLabel}</td>
                       <td className="py-2.5 px-3 text-right font-mono tabular-nums">
                         {formatCurrency(m.revenueIdr)}
                       </td>
@@ -1157,9 +1665,9 @@ export function ReportsView({ erp }: { erp: ErpController }) {
                     </tr>
                   ))}
                 </tbody>
-                <tfoot className="bg-[#0B1B3A] text-white font-semibold">
+                <tfoot className="sticky bottom-0 z-10 bg-[#0B1B3A] text-white font-semibold">
                   <tr>
-                    <td className="py-3 px-4">TOTAL AKUMULASI</td>
+                    <td className="py-3 px-4" colSpan={2}>TOTAL AKUMULASI</td>
                     <td className="py-3 px-3 text-right font-mono tabular-nums">
                       {formatCurrency(monthlyPerformance.totalRevenueIdr)}
                     </td>
@@ -1193,9 +1701,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
 
             {activeReport === 'vat_reconciliation' && (
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-slate-600 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4">Tanggal</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={rowSelection.allVisibleSelected}
+                        indeterminate={rowSelection.someVisibleSelected}
+                        onChange={rowSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua baris PPN"
+                      />
+                    </th>
+                    <th className="py-3 px-3">Tanggal</th>
                     <th className="py-3 px-3">No. Dokumen</th>
                     <th className="py-3 px-3">No. Faktur Pajak</th>
                     <th className="py-3 px-3">Jenis</th>
@@ -1209,14 +1725,24 @@ export function ReportsView({ erp }: { erp: ErpController }) {
                 <tbody className="divide-y divide-slate-100">
                   {vatSummary.details.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-8 text-center text-slate-500">
+                      <td colSpan={8} className="py-8 text-center text-slate-500">
                         Belum ada dokumen pajak pada periode yang dipilih.
                       </td>
                     </tr>
                   ) : (
                     vatSummary.details.map((d) => (
-                      <tr key={d.id} className="hover:bg-[#F4F7FB]">
-                        <td className="py-2.5 px-4 font-mono tabular-nums text-slate-600">{d.date}</td>
+                      <tr
+                        key={d.id}
+                        className={rowSelection.isSelected(`vat:${d.id}`) ? 'bg-[#EFF5FB]/70' : 'hover:bg-[#F4F7FB]'}
+                      >
+                        <td className="py-2.5 pl-4 pr-2">
+                          <SelectCheckbox
+                            checked={rowSelection.isSelected(`vat:${d.id}`)}
+                            onChange={() => rowSelection.toggleOne(`vat:${d.id}`)}
+                            ariaLabel={`Pilih dokumen pajak ${d.docNumber}`}
+                          />
+                        </td>
+                        <td className="py-2.5 px-3 font-mono tabular-nums text-slate-600">{d.date}</td>
                         <td className="py-2.5 px-3 font-mono font-semibold text-[#0B1B3A]">{d.docNumber}</td>
                         <td className="py-2.5 px-3 font-mono text-slate-600">{d.taxInvoiceNumber || '-'}</td>
                         <td className="py-2.5 px-3">
@@ -1247,9 +1773,17 @@ export function ReportsView({ erp }: { erp: ErpController }) {
 
             {activeReport === 'budget_vs_actual' && (
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-slate-600 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4">Periode</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={rowSelection.allVisibleSelected}
+                        indeterminate={rowSelection.someVisibleSelected}
+                        onChange={rowSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua periode budget"
+                      />
+                    </th>
+                    <th className="py-3 px-3">Periode</th>
                     <th className="py-3 px-3 text-right">Target Omzet</th>
                     <th className="py-3 px-3 text-right">Aktual Omzet</th>
                     <th className="py-3 px-3 text-right">Capaian %</th>
@@ -1262,14 +1796,24 @@ export function ReportsView({ erp }: { erp: ErpController }) {
                 <tbody className="divide-y divide-slate-100">
                   {budgetRows.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="py-8 text-center text-slate-500">
+                      <td colSpan={9} className="py-8 text-center text-slate-500">
                         Belum ada target budget bulanan yang ditetapkan.
                       </td>
                     </tr>
                   ) : (
                     budgetRows.map((b) => (
-                      <tr key={b.periodKey} className="hover:bg-[#F4F7FB]">
-                        <td className="py-2.5 px-4 font-semibold text-[#0B1B3A]">{b.monthLabel}</td>
+                      <tr
+                        key={b.periodKey}
+                        className={rowSelection.isSelected(`bdg:${b.periodKey}`) ? 'bg-[#EFF5FB]/70' : 'hover:bg-[#F4F7FB]'}
+                      >
+                        <td className="py-2.5 pl-4 pr-2">
+                          <SelectCheckbox
+                            checked={rowSelection.isSelected(`bdg:${b.periodKey}`)}
+                            onChange={() => rowSelection.toggleOne(`bdg:${b.periodKey}`)}
+                            ariaLabel={`Pilih budget ${b.monthLabel}`}
+                          />
+                        </td>
+                        <td className="py-2.5 px-3 font-semibold text-[#0B1B3A]">{b.monthLabel}</td>
                         <td className="py-2.5 px-3 text-right font-mono tabular-nums">
                           {formatCurrency(b.targetRevenueIdr)}
                         </td>

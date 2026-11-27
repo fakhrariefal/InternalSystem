@@ -2,7 +2,8 @@ import {
   AlertTriangle,
   ArrowLeftRight,
   ClipboardCheck,
-  FileDown,
+  Download,
+  FileSpreadsheet,
   PackageMinus,
   PackagePlus,
   Pencil,
@@ -12,7 +13,9 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { usePrintDocument } from '../components/PrintableDocumentModal';
+import { BulkActionBar, SelectCheckbox } from '../components/ui/BulkActions';
 import {
   Button,
   Card,
@@ -37,6 +40,7 @@ import {
   Textarea,
 } from '../components/ui/primitives';
 import type { ErpController } from '../controllers/useErpController';
+import { useBulkSelection } from '../hooks/useBulkSelection';
 import { useI18n } from '../lib/i18n';
 import {
   computeBatchAlerts,
@@ -47,7 +51,11 @@ import {
 import { buildSuratJalanPrintDoc } from '../models/printDocumentModel';
 import { hasPermission } from '../models/rbac';
 import type { InventoryBatch, InventoryBatchStatus } from '../models/types';
-import { exportSuratJalanPdf } from '../services/exportService';
+import {
+  exportSuratJalanPdf,
+  exportTableToCsv,
+  exportTableToExcel,
+} from '../services/exportService';
 
 function sanitizeDigits(raw: string): string {
   const digits = raw.replace(/[^\d]/g, '');
@@ -176,6 +184,85 @@ export function InventoryView({ erp }: { erp: ErpController }) {
     (w) => selectedWh === 'ALL' || w.id === selectedWh
   );
 
+  const stockIds = useMemo(() => stockProducts.map((p) => p.id), [stockProducts]);
+  const stockSelection = useBulkSelection(stockIds);
+  const movementIds = useMemo(() => state.stockMovements.map((m) => m.id), [state.stockMovements]);
+  const movementSelection = useBulkSelection(movementIds);
+  const batchIds = useMemo(() => state.inventoryBatches.map((b) => b.id), [state.inventoryBatches]);
+  const batchSelection = useBulkSelection(batchIds);
+
+  const exportSelectedStock = (format: 'csv' | 'excel') => {
+    const picked = stockSelection.pickSelected(stockProducts);
+    if (picked.length === 0) return;
+    const headers = ['SKU', 'Produk', 'Satuan', ...visibleWarehouses.map((w) => w.code), 'Total', 'Min', 'Maks', 'Status'];
+    const rows = picked.map((p) => {
+      const total = getTotalProductStock(p);
+      const low = isLowStockProduct(p);
+      return [
+        p.sku,
+        p.name,
+        p.uomCode,
+        ...visibleWarehouses.map((w) => p.warehouseStocks[w.id] ?? 0),
+        total,
+        p.minStock,
+        p.maxStock,
+        low ? 'Low Stock' : 'Normal',
+      ];
+    });
+    const stamp = new Date().toISOString().slice(0, 10);
+    if (format === 'csv') {
+      exportTableToCsv(`Stok_Gudang_Terpilih_${stamp}`, headers, rows);
+    } else {
+      exportTableToExcel(
+        `Stok_Gudang_Terpilih_${stamp}`,
+        'Stok',
+        rows.map((r) => Object.fromEntries(headers.map((h, i) => [h, r[i]])))
+      );
+    }
+    toast.success(`${picked.length} SKU stok diekspor ke ${format.toUpperCase()}.`);
+  };
+
+  const exportSelectedMovements = () => {
+    const picked = movementSelection.pickSelected(state.stockMovements);
+    if (picked.length === 0) return;
+    exportTableToCsv(
+      `Mutasi_Stok_Terpilih_${new Date().toISOString().slice(0, 10)}`,
+      ['No. Pergerakan', 'Tipe', 'SKU', 'Produk', 'Gudang', 'Perubahan', 'Stok Akhir', 'Catatan'],
+      picked.map((m) => [
+        m.movementNumber || '-',
+        m.type || '-',
+        m.productSku || '-',
+        m.productName || '-',
+        (m.targetWarehouseName ? `${m.warehouseName || '-'} -> ${m.targetWarehouseName}` : m.warehouseName) || '-',
+        m.quantityDelta ?? 0,
+        m.afterQty ?? 0,
+        m.notes || '-',
+      ])
+    );
+    toast.success(`${picked.length} riwayat mutasi stok diekspor ke CSV.`);
+  };
+
+  const exportSelectedBatches = () => {
+    const picked = batchSelection.pickSelected(state.inventoryBatches);
+    if (picked.length === 0) return;
+    exportTableToCsv(
+      `Batch_Serial_Terpilih_${new Date().toISOString().slice(0, 10)}`,
+      ['Batch', 'Serial Number', 'SKU', 'Produk', 'Gudang', 'Qty', 'Tgl Expired', 'Garansi', 'Status'],
+      picked.map((b) => [
+        b.batchNumber,
+        b.serialNumber || '-',
+        b.productSku || '-',
+        b.productName || b.productId,
+        b.warehouseName || b.warehouseId,
+        b.qty,
+        b.expiryDate || '-',
+        b.warrantyUntil || '-',
+        b.status,
+      ])
+    );
+    toast.success(`${picked.length} data batch/serial diekspor ke CSV.`);
+  };
+
   return (
     <div className="space-y-5">
       <div>
@@ -224,19 +311,63 @@ export function InventoryView({ erp }: { erp: ErpController }) {
             </NativeSelect>
           </div>
 
+          {stockProducts.length > 0 && (
+            <div className="flex items-center justify-between gap-2 md:hidden px-1">
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={stockSelection.allVisibleSelected}
+                  indeterminate={stockSelection.someVisibleSelected}
+                  onChange={stockSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua SKU stok"
+                />
+                <span>Pilih Semua ({stockProducts.length})</span>
+              </label>
+            </div>
+          )}
+
+          <BulkActionBar
+            selectedCount={stockSelection.selectedCount}
+            itemLabel="SKU stok"
+            onClear={stockSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-stock-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: () => exportSelectedStock('csv'),
+              },
+              {
+                id: 'export-stock-xlsx',
+                label: 'Export Terpilih Excel',
+                icon: <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-700" />,
+                variant: 'outline',
+                onClick: () => exportSelectedStock('excel'),
+              },
+            ]}
+          />
+
           {/* Mobile Stock Cards */}
-          <div className="space-y-3 md:hidden">
+          <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {stockProducts.map((p) => {
               const total = getTotalProductStock(p);
               const low = isLowStockProduct(p);
               return (
-                <Card key={`m_stk_${p.id}`}>
+                <Card key={`m_stk_${p.id}`} className={stockSelection.isSelected(p.id) ? 'border-[#1B5E99] bg-[#F4F8FC]' : ''}>
                   <CardContent className="p-4 space-y-3 text-xs">
                     <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="font-semibold text-[#0B1B3A]">{p.name}</div>
-                        <div className="text-[11px] font-mono text-slate-500">
-                          {p.sku} · {p.uomCode}
+                      <div className="flex items-start gap-2 min-w-0">
+                        <SelectCheckbox
+                          checked={stockSelection.isSelected(p.id)}
+                          onChange={() => stockSelection.toggleOne(p.id)}
+                          ariaLabel={`Pilih stok ${p.name}`}
+                          className="mt-0.5"
+                        />
+                        <div className="min-w-0">
+                          <div className="font-semibold text-[#0B1B3A]">{p.name}</div>
+                          <div className="text-[11px] font-mono text-slate-500">
+                            {p.sku} · {p.uomCode}
+                          </div>
                         </div>
                       </div>
                       <StatusLabel
@@ -272,10 +403,18 @@ export function InventoryView({ erp }: { erp: ErpController }) {
 
           {/* Desktop Stock Table */}
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200">
                   <tr>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={stockSelection.allVisibleSelected}
+                        indeterminate={stockSelection.someVisibleSelected}
+                        onChange={stockSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua SKU stok"
+                      />
+                    </th>
                     <th className="py-3 px-4 font-semibold">SKU &amp; Produk</th>
                     {visibleWarehouses.map((w) => (
                       <th key={w.id} className="py-3 px-3 font-semibold text-right">
@@ -292,7 +431,14 @@ export function InventoryView({ erp }: { erp: ErpController }) {
                     const total = getTotalProductStock(p);
                     const low = isLowStockProduct(p);
                     return (
-                      <tr key={p.id} className="hover:bg-slate-50/70">
+                      <tr key={p.id} className={stockSelection.isSelected(p.id) ? 'bg-[#F0F6FC]' : 'hover:bg-slate-50/70'}>
+                        <td className="py-2.5 pl-4 pr-2">
+                          <SelectCheckbox
+                            checked={stockSelection.isSelected(p.id)}
+                            onChange={() => stockSelection.toggleOne(p.id)}
+                            ariaLabel={`Pilih stok ${p.name}`}
+                          />
+                        </td>
                         <td className="py-2.5 px-4">
                           <div className="font-medium text-slate-900">{p.name}</div>
                           <div className="text-[11px] font-mono text-slate-500">
@@ -758,9 +904,54 @@ export function InventoryView({ erp }: { erp: ErpController }) {
         </TabsContent>
 
         {/* STOCK MOVEMENTS HISTORY */}
-        <TabsContent value="movements">
+        <TabsContent value="movements" className="space-y-3">
+          {state.stockMovements.length > 0 && (
+            <div className="flex items-center justify-between gap-2 md:hidden px-1">
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={movementSelection.allVisibleSelected}
+                  indeterminate={movementSelection.someVisibleSelected}
+                  onChange={movementSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua riwayat mutasi stok"
+                />
+                <span>Pilih Semua ({state.stockMovements.length})</span>
+              </label>
+            </div>
+          )}
+
+          <BulkActionBar
+            selectedCount={movementSelection.selectedCount}
+            itemLabel="mutasi stok"
+            onClear={movementSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-mov-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: exportSelectedMovements,
+              },
+              ...(canDeleteBatch
+                ? [
+                    {
+                      id: 'delete-mov-bulk',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: `Konfirmasi Hapus (${movementSelection.selectedCount})`,
+                      onClick: async () => {
+                        await erp.bulkDeleteStockMovements(Array.from(movementSelection.selectedIds));
+                        movementSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
           {/* Mobile Movements Cards */}
-          <div className="space-y-3 md:hidden">
+          <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {state.stockMovements.map((m) => {
               const linkedSo =
                 m.type === 'GOODS_ISSUE'
@@ -769,10 +960,17 @@ export function InventoryView({ erp }: { erp: ErpController }) {
                     )
                   : undefined;
               return (
-                <Card key={`m_mov_${m.id}`}>
+                <Card key={`m_mov_${m.id}`} className={movementSelection.isSelected(m.id) ? 'border-[#1B5E99] bg-[#F4F8FC]' : ''}>
                   <CardContent className="p-4 space-y-2.5 text-xs">
                     <div className="flex items-start justify-between gap-2">
-                      <div className="font-mono font-bold text-[#0B1B3A]">{m.movementNumber}</div>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <SelectCheckbox
+                          checked={movementSelection.isSelected(m.id)}
+                          onChange={() => movementSelection.toggleOne(m.id)}
+                          ariaLabel={`Pilih mutasi ${m.movementNumber}`}
+                        />
+                        <div className="font-mono font-bold text-[#0B1B3A] truncate">{m.movementNumber}</div>
+                      </div>
                       <StatusLabel
                         status={m.type}
                         tone={
@@ -816,42 +1014,23 @@ export function InventoryView({ erp }: { erp: ErpController }) {
                     {(linkedSo || canDeleteBatch) && (
                       <div className="flex flex-wrap items-center gap-2">
                         {linkedSo && (
-                          <>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
-                                const cust = state.customers.find((c) => c.id === linkedSo.customerId);
-                                const wh = state.warehouses.find((w) => w.id === m.warehouseId);
-                                openPrintPreview(
-                                  buildSuratJalanPrintDoc(linkedSo, state.settings, cust, wh, m),
-                                  () => exportSuratJalanPdf(linkedSo, state.settings, cust, wh, m)
-                                );
-                              }}
-                            >
-                              <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                              Cetak SJ
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="flex-1"
-                              onClick={() =>
-                                void exportSuratJalanPdf(
-                                  linkedSo,
-                                  state.settings,
-                                  state.customers.find((c) => c.id === linkedSo.customerId),
-                                  state.warehouses.find((w) => w.id === m.warehouseId),
-                                  m
-                                )
-                              }
-                            >
-                              <FileDown className="h-3.5 w-3.5 text-[#1B5E99]" />
-                              SJ PDF
-                            </Button>
-                          </>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            aria-label={`Cetak Preview Surat Jalan ${m.movementNumber}`}
+                            onClick={() => {
+                              const cust = state.customers.find((c) => c.id === linkedSo.customerId);
+                              const wh = state.warehouses.find((w) => w.id === m.warehouseId);
+                              openPrintPreview(
+                                buildSuratJalanPrintDoc(linkedSo, state.settings, cust, wh, m),
+                                () => exportSuratJalanPdf(linkedSo, state.settings, cust, wh, m)
+                              );
+                            }}
+                          >
+                            <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
+                            Cetak Preview
+                          </Button>
                         )}
                         {canDeleteBatch && (
                           <Button
@@ -885,10 +1064,18 @@ export function InventoryView({ erp }: { erp: ErpController }) {
 
           {/* Desktop Movements Table */}
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200">
                   <tr>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={movementSelection.allVisibleSelected}
+                        indeterminate={movementSelection.someVisibleSelected}
+                        onChange={movementSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua riwayat mutasi stok"
+                      />
+                    </th>
                     <th className="py-3 px-4 font-semibold">No. Pergerakan</th>
                     <th className="py-3 px-3 font-semibold">Tipe</th>
                     <th className="py-3 px-3 font-semibold">Produk</th>
@@ -902,7 +1089,7 @@ export function InventoryView({ erp }: { erp: ErpController }) {
                 <tbody className="divide-y divide-slate-100">
                   {state.stockMovements.length === 0 && (
                     <tr>
-                      <td colSpan={8} className="py-8 text-center text-slate-500">
+                      <td colSpan={9} className="py-8 text-center text-slate-500">
                         Belum ada riwayat pergerakan stok gudang.
                       </td>
                     </tr>
@@ -915,7 +1102,14 @@ export function InventoryView({ erp }: { erp: ErpController }) {
                           )
                         : undefined;
                     return (
-                      <tr key={m.id} className="hover:bg-slate-50/70">
+                      <tr key={m.id} className={movementSelection.isSelected(m.id) ? 'bg-[#F0F6FC]' : 'hover:bg-slate-50/70'}>
+                        <td className="py-2.5 pl-4 pr-2">
+                          <SelectCheckbox
+                            checked={movementSelection.isSelected(m.id)}
+                            onChange={() => movementSelection.toggleOne(m.id)}
+                            ariaLabel={`Pilih mutasi ${m.movementNumber}`}
+                          />
+                        </td>
                         <td className="py-2.5 px-4 font-mono font-semibold text-slate-900">
                           {m.movementNumber}
                         </td>
@@ -950,41 +1144,23 @@ export function InventoryView({ erp }: { erp: ErpController }) {
                         <td className="py-2.5 px-3 text-slate-500">{m.notes || '-'}</td>
                         <td className="py-2.5 px-4 text-right whitespace-nowrap space-x-1">
                           {linkedSo && (
-                            <>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => {
-                                  const cust = state.customers.find((c) => c.id === linkedSo.customerId);
-                                  const wh = state.warehouses.find((w) => w.id === m.warehouseId);
-                                  openPrintPreview(
-                                    buildSuratJalanPrintDoc(linkedSo, state.settings, cust, wh, m),
-                                    () => exportSuratJalanPdf(linkedSo, state.settings, cust, wh, m)
-                                  );
-                                }}
-                              >
-                                <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                                Cetak
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() =>
-                                  void exportSuratJalanPdf(
-                                    linkedSo,
-                                    state.settings,
-                                    state.customers.find((c) => c.id === linkedSo.customerId),
-                                    state.warehouses.find((w) => w.id === m.warehouseId),
-                                    m
-                                  )
-                                }
-                              >
-                                <FileDown className="h-3.5 w-3.5 text-[#1B5E99]" />
-                                Surat Jalan
-                              </Button>
-                            </>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              aria-label={`Cetak Preview Surat Jalan ${m.movementNumber}`}
+                              onClick={() => {
+                                const cust = state.customers.find((c) => c.id === linkedSo.customerId);
+                                const wh = state.warehouses.find((w) => w.id === m.warehouseId);
+                                openPrintPreview(
+                                  buildSuratJalanPrintDoc(linkedSo, state.settings, cust, wh, m),
+                                  () => exportSuratJalanPdf(linkedSo, state.settings, cust, wh, m)
+                                );
+                              }}
+                            >
+                              <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
+                              Cetak Preview
+                            </Button>
                           )}
                           {canDeleteBatch && (
                             <Button
@@ -1079,8 +1255,53 @@ export function InventoryView({ erp }: { erp: ErpController }) {
             )}
           </div>
 
+          {state.inventoryBatches.length > 0 && (
+            <div className="flex items-center justify-between gap-2 md:hidden px-1">
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={batchSelection.allVisibleSelected}
+                  indeterminate={batchSelection.someVisibleSelected}
+                  onChange={batchSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua batch dan serial"
+                />
+                <span>Pilih Semua ({state.inventoryBatches.length})</span>
+              </label>
+            </div>
+          )}
+
+          <BulkActionBar
+            selectedCount={batchSelection.selectedCount}
+            itemLabel="batch / serial"
+            onClear={batchSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-batch-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: exportSelectedBatches,
+              },
+              ...(canDeleteBatch
+                ? [
+                    {
+                      id: 'delete-batch-bulk',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: `Konfirmasi Hapus (${batchSelection.selectedCount})`,
+                      onClick: async () => {
+                        await erp.bulkDeleteInventoryBatches(Array.from(batchSelection.selectedIds));
+                        batchSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
           {/* Mobile Batch Cards */}
-          <div className="space-y-3 md:hidden">
+          <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {state.inventoryBatches.length === 0 ? (
               <Card>
                 <CardContent className="py-8 text-center text-xs text-slate-500">
@@ -1092,18 +1313,26 @@ export function InventoryView({ erp }: { erp: ErpController }) {
                 const isExpired = batchAlerts.expired.some((x) => x.id === bat.id);
                 const isSoon = batchAlerts.expiringSoon.some((x) => x.id === bat.id);
                 return (
-                  <Card key={`m_bat_${bat.id}`}>
+                  <Card key={`m_bat_${bat.id}`} className={batchSelection.isSelected(bat.id) ? 'border-[#1B5E99] bg-[#F4F8FC]' : ''}>
                     <CardContent className="p-4 space-y-2.5 text-xs">
                       <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="font-mono font-bold text-[#0B1B3A]">
-                            Batch: {bat.batchNumber}
-                          </div>
-                          {bat.serialNumber && (
-                            <div className="font-mono text-[11px] text-[#1B5E99]">
-                              SN: {bat.serialNumber}
+                        <div className="flex items-start gap-2 min-w-0">
+                          <SelectCheckbox
+                            checked={batchSelection.isSelected(bat.id)}
+                            onChange={() => batchSelection.toggleOne(bat.id)}
+                            ariaLabel={`Pilih batch ${bat.batchNumber}`}
+                            className="mt-0.5"
+                          />
+                          <div className="min-w-0">
+                            <div className="font-mono font-bold text-[#0B1B3A]">
+                              Batch: {bat.batchNumber}
                             </div>
-                          )}
+                            {bat.serialNumber && (
+                              <div className="font-mono text-[11px] text-[#1B5E99]">
+                                SN: {bat.serialNumber}
+                              </div>
+                            )}
+                          </div>
                         </div>
                         <StatusLabel
                           status={isExpired ? 'Expired' : isSoon ? 'Segera Expired' : bat.status}
@@ -1183,10 +1412,18 @@ export function InventoryView({ erp }: { erp: ErpController }) {
 
           {/* Desktop Batch Table */}
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200">
                   <tr>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={batchSelection.allVisibleSelected}
+                        indeterminate={batchSelection.someVisibleSelected}
+                        onChange={batchSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua batch dan serial"
+                      />
+                    </th>
                     <th className="py-3 px-4 font-semibold">Batch &amp; Serial</th>
                     <th className="py-3 px-3 font-semibold">SKU &amp; Produk</th>
                     <th className="py-3 px-3 font-semibold">Gudang</th>
@@ -1200,7 +1437,7 @@ export function InventoryView({ erp }: { erp: ErpController }) {
                 <tbody className="divide-y divide-slate-100">
                   {state.inventoryBatches.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="py-8 text-center text-slate-500">
+                      <td colSpan={9} className="py-8 text-center text-slate-500">
                         Belum ada data batch atau nomor seri.
                       </td>
                     </tr>
@@ -1209,7 +1446,14 @@ export function InventoryView({ erp }: { erp: ErpController }) {
                       const isExpired = batchAlerts.expired.some((x) => x.id === bat.id);
                       const isSoon = batchAlerts.expiringSoon.some((x) => x.id === bat.id);
                       return (
-                        <tr key={bat.id} className="hover:bg-slate-50/70">
+                        <tr key={bat.id} className={batchSelection.isSelected(bat.id) ? 'bg-[#F0F6FC]' : 'hover:bg-slate-50/70'}>
+                          <td className="py-2.5 pl-4 pr-2">
+                            <SelectCheckbox
+                              checked={batchSelection.isSelected(bat.id)}
+                              onChange={() => batchSelection.toggleOne(bat.id)}
+                              ariaLabel={`Pilih batch ${bat.batchNumber}`}
+                            />
+                          </td>
                           <td className="py-2.5 px-4">
                             <div className="font-mono font-semibold text-[#0B1B3A]">{bat.batchNumber}</div>
                             {bat.serialNumber && (

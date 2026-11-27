@@ -6,7 +6,6 @@ import {
   Download,
   Eye,
   FileSpreadsheet,
-  FileText,
   Landmark,
   Layers,
   Lock,
@@ -25,6 +24,7 @@ import {
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { usePrintDocument } from '../components/PrintableDocumentModal';
+import { BulkActionBar, SelectCheckbox } from '../components/ui/BulkActions';
 import {
   Button,
   Card,
@@ -48,6 +48,7 @@ import {
   TabsTrigger,
 } from '../components/ui/primitives';
 import type { ErpController } from '../controllers/useErpController';
+import { useBulkSelection } from '../hooks/useBulkSelection';
 import { useI18n } from '../lib/i18n';
 import {
   computeBalanceSheet,
@@ -70,6 +71,7 @@ import {
 import {
   buildPaymentReceiptPrintDoc,
   buildSalesInvoicePrintDoc,
+  buildTableReportPrintDoc,
 } from '../models/printDocumentModel';
 import { hasPermission } from '../models/rbac';
 import { createInitialSeedState } from '../models/seedData';
@@ -468,6 +470,18 @@ export function AccountingView({ erp }: { erp: ErpController }) {
       return true;
     });
   }, [invoiceLedgerFilter, invoiceStatusFilter, state.invoices]);
+
+  const ledgerSelectableIds = useMemo(() => {
+    if (effectiveAccountId !== 'ALL' && activeLedgerStatement) {
+      return filteredLedgerRows.map((r, idx) => `sp:${r.entryId}:${idx}`);
+    }
+    return allAccountFlatLines.map((r, idx) => `all:${r.entry.id}:${idx}`);
+  }, [activeLedgerStatement, allAccountFlatLines, effectiveAccountId, filteredLedgerRows]);
+
+  const ledgerSelection = useBulkSelection(ledgerSelectableIds);
+  const journalSelection = useBulkSelection(filteredJournals.map((j) => j.id));
+  const coaSelection = useBulkSelection(filteredCoaRows.map((r) => r.account.id));
+  const invoiceSelection = useBulkSelection(filteredInvoices.map((inv) => inv.id));
 
   const dummyJournalCount = useMemo(
     () => findSeededDummyAccountingTargets(state, createInitialSeedState()).length,
@@ -966,11 +980,94 @@ export function AccountingView({ erp }: { erp: ErpController }) {
             type="button"
             variant="outline"
             size="sm"
-            aria-label="Export Buku Besar PDF"
-            onClick={handleExportBukuBesarPdf}
+            aria-label="Cetak Preview Buku Besar"
+            onClick={() => {
+              if (effectiveAccountId === 'ALL' || !activeLedgerStatement) {
+                openPrintPreview(
+                  buildTableReportPrintDoc({
+                    documentTitle: 'BUKU BESAR UMUM (GENERAL LEDGER) — SEMUA AKUN',
+                    documentNumber: `GL-ALL-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`,
+                    filenameBase: 'DomestiqHub_Buku_Besar_Semua_Akun',
+                    subtitle: `Periode: ${ledgerStartDate || 'Awal'} s/d ${ledgerEndDate || 'Sekarang'}`,
+                    company: state.settings,
+                    orientation: 'landscape',
+                    columns: [
+                      { header: 'Tanggal', align: 'left', mono: true },
+                      { header: 'No. Jurnal', align: 'left', mono: true },
+                      { header: 'Kode', align: 'left', mono: true },
+                      { header: 'Akun', align: 'left' },
+                      { header: 'Keterangan', align: 'left' },
+                      { header: 'Debit (IDR)', align: 'right', mono: true },
+                      { header: 'Kredit (IDR)', align: 'right', mono: true },
+                    ],
+                    rows: allAccountFlatLines.map((r) => [
+                      r.entry.entryDate,
+                      r.entry.entryNumber,
+                      r.accountCode,
+                      r.accountName,
+                      r.entry.description,
+                      r.debitIdr > 0 ? formatCurrency(r.debitIdr) : '-',
+                      r.creditIdr > 0 ? formatCurrency(r.creditIdr) : '-',
+                    ]),
+                  }),
+                  handleExportBukuBesarPdf
+                );
+                return;
+              }
+
+              openPrintPreview(
+                buildTableReportPrintDoc({
+                  documentTitle: `BUKU BESAR AKUN ${activeLedgerStatement.account.code} — ${activeLedgerStatement.account.name}`,
+                  documentNumber: `GL-${activeLedgerStatement.account.code}`,
+                  filenameBase: `Buku_Besar_${activeLedgerStatement.account.code}`,
+                  subtitle: `Saldo Normal: ${activeLedgerStatement.account.normalBalance} | Saldo Akhir: ${formatCurrency(activeLedgerStatement.closingBalanceIdr)}`,
+                  company: state.settings,
+                  orientation: 'landscape',
+                  columns: [
+                    { header: 'Tanggal', align: 'left', mono: true },
+                    { header: 'No. Jurnal', align: 'left', mono: true },
+                    { header: 'Ref', align: 'left', mono: true },
+                    { header: 'Keterangan', align: 'left' },
+                    { header: 'Debit (IDR)', align: 'right', mono: true },
+                    { header: 'Kredit (IDR)', align: 'right', mono: true },
+                    { header: 'Saldo Berjalan (IDR)', align: 'right', mono: true, bold: true },
+                  ],
+                  rows: [
+                    [
+                      ledgerStartDate || '-',
+                      'SALDO AWAL',
+                      '-',
+                      'Saldo Awal Periode',
+                      '-',
+                      '-',
+                      formatCurrency(activeLedgerStatement.openingBalanceIdr),
+                    ],
+                    ...filteredLedgerRows.map((r) => [
+                      r.entryDate,
+                      r.entryNumber,
+                      r.referenceNumber || '-',
+                      r.memo ? `${r.description} — ${r.memo}` : r.description,
+                      r.debitIdr > 0 ? formatCurrency(r.debitIdr) : '-',
+                      r.creditIdr > 0 ? formatCurrency(r.creditIdr) : '-',
+                      formatCurrency(r.runningBalanceIdr),
+                    ]),
+                  ],
+                  totals: [
+                    { label: 'Total Debit', value: formatCurrency(activeLedgerStatement.totalDebitIdr) },
+                    { label: 'Total Kredit', value: formatCurrency(activeLedgerStatement.totalCreditIdr) },
+                    {
+                      label: 'Saldo Akhir',
+                      value: formatCurrency(activeLedgerStatement.closingBalanceIdr),
+                      isGrandTotal: true,
+                    },
+                  ],
+                }),
+                handleExportBukuBesarPdf
+              );
+            }}
           >
-            <FileText className="h-3.5 w-3.5 text-[#1B5E99]" />
-            Export PDF
+            <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
+            Cetak Preview
           </Button>
           {canWrite && (
             <Button
@@ -1152,6 +1249,86 @@ export function AccountingView({ erp }: { erp: ErpController }) {
             </CardContent>
           </Card>
 
+          <BulkActionBar
+            selectedCount={ledgerSelection.selectedCount}
+            itemLabel="mutasi buku besar"
+            onClear={ledgerSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-gl-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: () => {
+                  if (effectiveAccountId !== 'ALL' && activeLedgerStatement) {
+                    const picked = filteredLedgerRows.filter((_, idx) =>
+                      ledgerSelection.isSelected(`sp:${filteredLedgerRows[idx].entryId}:${idx}`)
+                    );
+                    exportTableToCsv(
+                      `Buku_Besar_${activeLedgerStatement.account.code}_Terpilih`,
+                      ['Tanggal', 'No Jurnal', 'Referensi', 'Keterangan', 'Debit (IDR)', 'Kredit (IDR)', 'Saldo Berjalan (IDR)'],
+                      picked.map((r) => [
+                        r.entryDate,
+                        r.entryNumber,
+                        r.referenceNumber || '-',
+                        r.memo ? `${r.description} (${r.memo})` : r.description,
+                        r.debitIdr,
+                        r.creditIdr,
+                        r.runningBalanceIdr,
+                      ])
+                    );
+                    toast.success(`${picked.length} baris mutasi diekspor ke CSV.`);
+                  } else {
+                    const picked = allAccountFlatLines.filter((item, idx) =>
+                      ledgerSelection.isSelected(`all:${item.entry.id}:${idx}`)
+                    );
+                    exportTableToCsv(
+                      'Buku_Besar_Semua_Akun_Terpilih',
+                      ['Tanggal', 'No Jurnal', 'Kode Akun', 'Nama Akun', 'Keterangan', 'Memo', 'Debit (IDR)', 'Kredit (IDR)'],
+                      picked.map((row) => [
+                        row.entry.entryDate,
+                        row.entry.entryNumber,
+                        row.accountCode,
+                        row.accountName,
+                        row.entry.description,
+                        row.memo || '-',
+                        row.debitIdr,
+                        row.creditIdr,
+                      ])
+                    );
+                    toast.success(`${picked.length} baris mutasi diekspor ke CSV.`);
+                  }
+                },
+              },
+              ...(isDirektur
+                ? [
+                    {
+                      id: 'delete-gl-entries',
+                      label: 'Hapus Jurnal Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: 'Konfirmasi Hapus',
+                      onClick: async () => {
+                        const entryIds = new Set<string>();
+                        if (effectiveAccountId !== 'ALL' && activeLedgerStatement) {
+                          filteredLedgerRows.forEach((r, idx) => {
+                            if (ledgerSelection.isSelected(`sp:${r.entryId}:${idx}`)) entryIds.add(r.entryId);
+                          });
+                        } else {
+                          allAccountFlatLines.forEach((item, idx) => {
+                            if (ledgerSelection.isSelected(`all:${item.entry.id}:${idx}`)) entryIds.add(item.entry.id);
+                          });
+                        }
+                        const ok = await erp.bulkDeleteJournalEntries(Array.from(entryIds));
+                        if (ok) ledgerSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
           {effectiveAccountId !== 'ALL' && activeLedgerStatement ? (
             <>
               {/* Account Header & 4 Balance Boxes */}
@@ -1208,7 +1385,26 @@ export function AccountingView({ erp }: { erp: ErpController }) {
               </Card>
 
               {/* Mobile Ledger Card List */}
-              <div className="space-y-2.5 md:hidden">
+              {filteredLedgerRows.length > 0 && (
+                <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs md:hidden">
+                  <label className="inline-flex items-center gap-2 font-medium text-slate-700 cursor-pointer">
+                    <SelectCheckbox
+                      checked={ledgerSelection.allVisibleSelected}
+                      indeterminate={ledgerSelection.someVisibleSelected}
+                      onChange={ledgerSelection.toggleAllVisible}
+                      ariaLabel="Pilih semua mutasi buku besar"
+                    />
+                    <span>Pilih Semua ({filteredLedgerRows.length})</span>
+                  </label>
+                  {ledgerSelection.selectedCount > 0 && (
+                    <span className="font-semibold text-[#1B5E99]">
+                      {ledgerSelection.selectedCount} dipilih
+                    </span>
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-2.5 md:hidden max-h-[540px] overflow-y-auto pr-1">
                 <Card>
                   <CardContent className="p-3.5 flex items-center justify-between text-xs bg-slate-50/70">
                     <div>
@@ -1230,21 +1426,33 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                 ) : (
                   filteredLedgerRows.map((row, idx) => {
                     const parentJournal = state.journalEntries.find((j) => j.id === row.entryId);
+                    const selKey = `sp:${row.entryId}:${idx}`;
                     return (
-                      <Card key={`m_${row.entryId}_${idx}`}>
+                      <Card
+                        key={`m_${row.entryId}_${idx}`}
+                        className={ledgerSelection.isSelected(selKey) ? 'ring-2 ring-[#1B5E99]/40 bg-[#F4F8FD]' : ''}
+                      >
                         <CardContent className="p-3.5 space-y-2 text-xs">
                           <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <button
-                                type="button"
-                                onClick={() => parentJournal && setViewJournal(parentJournal)}
-                                className="font-mono font-bold text-[#1B5E99] hover:underline cursor-pointer"
-                              >
-                                {row.entryNumber}
-                              </button>
-                              <div className="text-[11px] text-slate-500 font-mono tabular-nums">
-                                {row.entryDate} · {row.journalType}
-                                {row.referenceNumber ? ` · ${row.referenceNumber}` : ''}
+                            <div className="flex items-start gap-2.5 min-w-0">
+                              <SelectCheckbox
+                                checked={ledgerSelection.isSelected(selKey)}
+                                onChange={() => ledgerSelection.toggleOne(selKey)}
+                                ariaLabel={`Pilih mutasi ${row.entryNumber}`}
+                                className="mt-0.5"
+                              />
+                              <div className="min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() => parentJournal && setViewJournal(parentJournal)}
+                                  className="font-mono font-bold text-[#1B5E99] hover:underline cursor-pointer"
+                                >
+                                  {row.entryNumber}
+                                </button>
+                                <div className="text-[11px] text-slate-500 font-mono tabular-nums">
+                                  {row.entryDate} · {row.journalType}
+                                  {row.referenceNumber ? ` · ${row.referenceNumber}` : ''}
+                                </div>
                               </div>
                             </div>
                             <div className="text-right shrink-0">
@@ -1305,11 +1513,19 @@ export function AccountingView({ erp }: { erp: ErpController }) {
 
               {/* Desktop Specific Account Running Ledger Table */}
               <Card className="hidden md:block">
-                <div className="overflow-x-auto">
+                <div className="max-h-[500px] overflow-auto">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                       <tr>
-                        <th className="py-3 px-4 font-semibold">Tanggal</th>
+                        <th className="py-3 pl-4 pr-2 w-10">
+                          <SelectCheckbox
+                            checked={ledgerSelection.allVisibleSelected}
+                            indeterminate={ledgerSelection.someVisibleSelected}
+                            onChange={ledgerSelection.toggleAllVisible}
+                            ariaLabel="Pilih semua mutasi buku besar"
+                          />
+                        </th>
+                        <th className="py-3 px-3 font-semibold">Tanggal</th>
                         <th className="py-3 px-3 font-semibold">No. Jurnal</th>
                         <th className="py-3 px-3 font-semibold">Jenis</th>
                         <th className="py-3 px-3 font-semibold">Referensi</th>
@@ -1322,7 +1538,8 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       <tr className="bg-slate-50/70 font-medium text-slate-600">
-                        <td className="py-2.5 px-4 font-mono tabular-nums">
+                        <td className="py-2.5 pl-4 pr-2" />
+                        <td className="py-2.5 px-3 font-mono tabular-nums">
                           {ledgerStartDate || '-'}
                         </td>
                         <td className="py-2.5 px-3 font-mono">SALDO AWAL</td>
@@ -1339,16 +1556,27 @@ export function AccountingView({ erp }: { erp: ErpController }) {
 
                       {filteredLedgerRows.length === 0 ? (
                         <tr>
-                          <td colSpan={isDirektur ? 9 : 8} className="py-10 text-center text-slate-500">
+                          <td colSpan={isDirektur ? 10 : 9} className="py-10 text-center text-slate-500">
                             Belum ada mutasi transaksi untuk akun ini pada periode yang dipilih.
                           </td>
                         </tr>
                       ) : (
                         filteredLedgerRows.map((row, idx) => {
                           const parentJournal = state.journalEntries.find((j) => j.id === row.entryId);
+                          const selKey = `sp:${row.entryId}:${idx}`;
                           return (
-                            <tr key={`${row.entryId}_${idx}`} className="hover:bg-[#F4F7FB]">
-                              <td className="py-3 px-4 font-mono tabular-nums text-slate-600 whitespace-nowrap">
+                            <tr
+                              key={`${row.entryId}_${idx}`}
+                              className={ledgerSelection.isSelected(selKey) ? 'bg-[#EFF5FB]/70' : 'hover:bg-[#F4F7FB]'}
+                            >
+                              <td className="py-3 pl-4 pr-2">
+                                <SelectCheckbox
+                                  checked={ledgerSelection.isSelected(selKey)}
+                                  onChange={() => ledgerSelection.toggleOne(selKey)}
+                                  ariaLabel={`Pilih mutasi ${row.entryNumber}`}
+                                />
+                              </td>
+                              <td className="py-3 px-3 font-mono tabular-nums text-slate-600 whitespace-nowrap">
                                 {row.entryDate}
                               </td>
                               <td className="py-3 px-3 font-mono whitespace-nowrap">
@@ -1410,9 +1638,9 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                         })
                       )}
                     </tbody>
-                    <tfoot className="bg-slate-100/90 border-t-2 border-slate-200 font-semibold text-[#0B1B3A]">
+                    <tfoot className="sticky bottom-0 z-10 bg-slate-100 border-t-2 border-slate-200 font-semibold text-[#0B1B3A]">
                       <tr>
-                        <td colSpan={5} className="py-3 px-4 text-right">
+                        <td colSpan={6} className="py-3 px-4 text-right">
                           Total Mutasi &amp; Saldo Akhir ({activeLedgerStatement.account.code})
                         </td>
                         <td className="py-3 px-3 text-right font-mono tabular-nums text-[#154C7E]">
@@ -1434,7 +1662,26 @@ export function AccountingView({ erp }: { erp: ErpController }) {
           ) : (
             /* ALL ACCOUNTS CHRONOLOGICAL GENERAL LEDGER VIEW */
             <>
-              <div className="space-y-2.5 md:hidden">
+              {allAccountFlatLines.length > 0 && (
+                <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs md:hidden">
+                  <label className="inline-flex items-center gap-2 font-medium text-slate-700 cursor-pointer">
+                    <SelectCheckbox
+                      checked={ledgerSelection.allVisibleSelected}
+                      indeterminate={ledgerSelection.someVisibleSelected}
+                      onChange={ledgerSelection.toggleAllVisible}
+                      ariaLabel="Pilih semua mutasi buku besar"
+                    />
+                    <span>Pilih Semua ({allAccountFlatLines.length})</span>
+                  </label>
+                  {ledgerSelection.selectedCount > 0 && (
+                    <span className="font-semibold text-[#1B5E99]">
+                      {ledgerSelection.selectedCount} dipilih
+                    </span>
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-2.5 md:hidden max-h-[540px] overflow-y-auto pr-1">
                 {allAccountFlatLines.length === 0 ? (
                   <Card>
                     <CardContent className="py-8 text-center text-xs text-slate-500">
@@ -1442,69 +1689,82 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                     </CardContent>
                   </Card>
                 ) : (
-                  allAccountFlatLines.map((item, idx) => (
-                    <Card key={`m_all_${item.entry.id}_${idx}`}>
-                      <CardContent className="p-3.5 space-y-2 text-xs">
-                        <div className="flex items-center justify-between gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setViewJournal(item.entry)}
-                            className="font-mono font-bold text-[#1B5E99] hover:underline cursor-pointer"
-                          >
-                            {item.entry.entryNumber}
-                          </button>
-                          <span className="font-mono tabular-nums text-slate-500">
-                            {item.entry.entryDate}
-                          </span>
-                        </div>
-                        <div className="font-semibold text-[#0B1B3A]">
-                          <span className="font-mono text-[#1B5E99] mr-1.5">{item.accountCode}</span>
-                          {item.accountName}
-                        </div>
-                        <div className="text-slate-600">{item.entry.description}</div>
-                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
-                          <div>
-                            <span className="text-[10px] text-slate-500 block">Debit</span>
-                            <span className="font-mono tabular-nums font-semibold text-[#154C7E]">
-                              {item.debitIdr > 0 ? formatCurrency(item.debitIdr) : '-'}
+                  allAccountFlatLines.map((item, idx) => {
+                    const selKey = `all:${item.entry.id}:${idx}`;
+                    return (
+                      <Card
+                        key={`m_all_${item.entry.id}_${idx}`}
+                        className={ledgerSelection.isSelected(selKey) ? 'ring-2 ring-[#1B5E99]/40 bg-[#F4F8FD]' : ''}
+                      >
+                        <CardContent className="p-3.5 space-y-2 text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <SelectCheckbox
+                                checked={ledgerSelection.isSelected(selKey)}
+                                onChange={() => ledgerSelection.toggleOne(selKey)}
+                                ariaLabel={`Pilih mutasi ${item.entry.entryNumber}`}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setViewJournal(item.entry)}
+                                className="font-mono font-bold text-[#1B5E99] hover:underline cursor-pointer"
+                              >
+                                {item.entry.entryNumber}
+                              </button>
+                            </div>
+                            <span className="font-mono tabular-nums text-slate-500">
+                              {item.entry.entryDate}
                             </span>
                           </div>
-                          <div className="text-right">
-                            <span className="text-[10px] text-slate-500 block">Kredit</span>
-                            <span className="font-mono tabular-nums font-semibold text-[#8F670D]">
-                              {item.creditIdr > 0 ? formatCurrency(item.creditIdr) : '-'}
-                            </span>
+                          <div className="font-semibold text-[#0B1B3A]">
+                            <span className="font-mono text-[#1B5E99] mr-1.5">{item.accountCode}</span>
+                            {item.accountName}
                           </div>
-                        </div>
-                        {isDirektur && (
-                          <div className="flex justify-end pt-1">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="text-red-600 hover:bg-red-50 px-2"
-                              aria-label={`Hapus jurnal ${item.entry.entryNumber}`}
-                              onClick={() =>
-                                setConfirmDialog({
-                                  title: `Hapus Permanen ${item.entry.entryNumber}?`,
-                                  description:
-                                    'Dokumen jurnal beserta seluruh baris mutasinya akan dihapus permanen dari Buku Besar.',
-                                  confirmLabel: 'Hapus Permanen',
-                                  tone: 'danger',
-                                  onConfirm: async () => {
-                                    await erp.deleteJournalEntry(item.entry.id);
-                                  },
-                                })
-                              }
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              Hapus Jurnal
-                            </Button>
+                          <div className="text-slate-600">{item.entry.description}</div>
+                          <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
+                            <div>
+                              <span className="text-[10px] text-slate-500 block">Debit</span>
+                              <span className="font-mono tabular-nums font-semibold text-[#154C7E]">
+                                {item.debitIdr > 0 ? formatCurrency(item.debitIdr) : '-'}
+                              </span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-[10px] text-slate-500 block">Kredit</span>
+                              <span className="font-mono tabular-nums font-semibold text-[#8F670D]">
+                                {item.creditIdr > 0 ? formatCurrency(item.creditIdr) : '-'}
+                              </span>
+                            </div>
                           </div>
-                        )}
-                      </CardContent>
-                    </Card>
-                  ))
+                          {isDirektur && (
+                            <div className="flex justify-end pt-1">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="text-red-600 hover:bg-red-50 px-2"
+                                aria-label={`Hapus jurnal ${item.entry.entryNumber}`}
+                                onClick={() =>
+                                  setConfirmDialog({
+                                    title: `Hapus Permanen ${item.entry.entryNumber}?`,
+                                    description:
+                                      'Dokumen jurnal beserta seluruh baris mutasinya akan dihapus permanen dari Buku Besar.',
+                                    confirmLabel: 'Hapus Permanen',
+                                    tone: 'danger',
+                                    onConfirm: async () => {
+                                      await erp.deleteJournalEntry(item.entry.id);
+                                    },
+                                  })
+                                }
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                Hapus Jurnal
+                              </Button>
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    );
+                  })
                 )}
               </div>
 
@@ -1512,11 +1772,19 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                 <CardHeader>
                   <CardTitle>Buku Besar Umum — Seluruh Mutasi Akun</CardTitle>
                 </CardHeader>
-                <div className="overflow-x-auto">
+                <div className="max-h-[500px] overflow-auto">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                       <tr>
-                        <th className="py-3 px-4 font-semibold">Tanggal</th>
+                        <th className="py-3 pl-4 pr-2 w-10">
+                          <SelectCheckbox
+                            checked={ledgerSelection.allVisibleSelected}
+                            indeterminate={ledgerSelection.someVisibleSelected}
+                            onChange={ledgerSelection.toggleAllVisible}
+                            ariaLabel="Pilih semua mutasi buku besar"
+                          />
+                        </th>
+                        <th className="py-3 px-3 font-semibold">Tanggal</th>
                         <th className="py-3 px-3 font-semibold">No. Jurnal</th>
                         <th className="py-3 px-3 font-semibold">Akun</th>
                         <th className="py-3 px-3 font-semibold">Keterangan</th>
@@ -1528,74 +1796,87 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                     <tbody className="divide-y divide-slate-100">
                       {allAccountFlatLines.length === 0 ? (
                         <tr>
-                          <td colSpan={isDirektur ? 7 : 6} className="py-10 text-center text-slate-500">
+                          <td colSpan={isDirektur ? 8 : 7} className="py-10 text-center text-slate-500">
                             Tidak ada baris mutasi jurnal yang cocok.
                           </td>
                         </tr>
                       ) : (
-                        allAccountFlatLines.map((item, idx) => (
-                          <tr key={`${item.entry.id}_${idx}`} className="hover:bg-[#F4F7FB]">
-                            <td className="py-2.5 px-4 font-mono tabular-nums text-slate-600">
-                              {item.entry.entryDate}
-                            </td>
-                            <td className="py-2.5 px-3 font-mono">
-                              <button
-                                type="button"
-                                onClick={() => setViewJournal(item.entry)}
-                                className="font-semibold text-[#1B5E99] hover:underline cursor-pointer"
-                              >
-                                {item.entry.entryNumber}
-                              </button>
-                            </td>
-                            <td className="py-2.5 px-3">
-                              <span className="font-mono font-semibold text-[#0B1B3A] mr-1.5">
-                                {item.accountCode}
-                              </span>
-                              <span className="text-slate-700">{item.accountName}</span>
-                            </td>
-                            <td className="py-2.5 px-3">
-                              <div className="text-[#0B1B3A]">{item.entry.description}</div>
-                              {item.memo && <div className="text-[11px] text-slate-500">{item.memo}</div>}
-                            </td>
-                            <td className="py-2.5 px-3 text-right font-mono tabular-nums text-[#154C7E]">
-                              {item.debitIdr > 0 ? formatCurrency(item.debitIdr) : '-'}
-                            </td>
-                            <td className="py-2.5 px-4 text-right font-mono tabular-nums text-[#8F670D]">
-                              {item.creditIdr > 0 ? formatCurrency(item.creditIdr) : '-'}
-                            </td>
-                            {isDirektur && (
-                              <td className="py-2.5 px-3 text-right whitespace-nowrap">
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label={`Hapus jurnal ${item.entry.entryNumber}`}
-                                  title="Hapus permanen jurnal"
-                                  className="text-red-600 hover:bg-red-50"
-                                  onClick={() =>
-                                    setConfirmDialog({
-                                      title: `Hapus Permanen ${item.entry.entryNumber}?`,
-                                      description:
-                                        'Dokumen jurnal beserta seluruh baris mutasinya akan dihapus permanen dari Buku Besar.',
-                                      confirmLabel: 'Hapus Permanen',
-                                      tone: 'danger',
-                                      onConfirm: async () => {
-                                        await erp.deleteJournalEntry(item.entry.id);
-                                      },
-                                    })
-                                  }
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </Button>
+                        allAccountFlatLines.map((item, idx) => {
+                          const selKey = `all:${item.entry.id}:${idx}`;
+                          return (
+                            <tr
+                              key={`${item.entry.id}_${idx}`}
+                              className={ledgerSelection.isSelected(selKey) ? 'bg-[#EFF5FB]/70' : 'hover:bg-[#F4F7FB]'}
+                            >
+                              <td className="py-2.5 pl-4 pr-2">
+                                <SelectCheckbox
+                                  checked={ledgerSelection.isSelected(selKey)}
+                                  onChange={() => ledgerSelection.toggleOne(selKey)}
+                                  ariaLabel={`Pilih mutasi ${item.entry.entryNumber}`}
+                                />
                               </td>
-                            )}
-                          </tr>
-                        ))
+                              <td className="py-2.5 px-3 font-mono tabular-nums text-slate-600">
+                                {item.entry.entryDate}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono">
+                                <button
+                                  type="button"
+                                  onClick={() => setViewJournal(item.entry)}
+                                  className="font-semibold text-[#1B5E99] hover:underline cursor-pointer"
+                                >
+                                  {item.entry.entryNumber}
+                                </button>
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <span className="font-mono font-semibold text-[#0B1B3A] mr-1.5">
+                                  {item.accountCode}
+                                </span>
+                                <span className="text-slate-700">{item.accountName}</span>
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <div className="text-[#0B1B3A]">{item.entry.description}</div>
+                                {item.memo && <div className="text-[11px] text-slate-500">{item.memo}</div>}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono tabular-nums text-[#154C7E]">
+                                {item.debitIdr > 0 ? formatCurrency(item.debitIdr) : '-'}
+                              </td>
+                              <td className="py-2.5 px-4 text-right font-mono tabular-nums text-[#8F670D]">
+                                {item.creditIdr > 0 ? formatCurrency(item.creditIdr) : '-'}
+                              </td>
+                              {isDirektur && (
+                                <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    aria-label={`Hapus jurnal ${item.entry.entryNumber}`}
+                                    title="Hapus permanen jurnal"
+                                    className="text-red-600 hover:bg-red-50"
+                                    onClick={() =>
+                                      setConfirmDialog({
+                                        title: `Hapus Permanen ${item.entry.entryNumber}?`,
+                                        description:
+                                          'Dokumen jurnal beserta seluruh baris mutasinya akan dihapus permanen dari Buku Besar.',
+                                        confirmLabel: 'Hapus Permanen',
+                                        tone: 'danger',
+                                        onConfirm: async () => {
+                                          await erp.deleteJournalEntry(item.entry.id);
+                                        },
+                                      })
+                                    }
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })
                       )}
                     </tbody>
-                    <tfoot className="bg-slate-100/90 border-t-2 border-slate-200 font-semibold text-[#0B1B3A]">
+                    <tfoot className="sticky bottom-0 z-10 bg-slate-100 border-t-2 border-slate-200 font-semibold text-[#0B1B3A]">
                       <tr>
-                        <td colSpan={4} className="py-3 px-4 text-right">
+                        <td colSpan={5} className="py-3 px-4 text-right">
                           Total Mutasi Periode
                         </td>
                         <td className="py-3 px-3 text-right font-mono tabular-nums text-[#154C7E]">
@@ -1690,8 +1971,99 @@ export function AccountingView({ erp }: { erp: ErpController }) {
             </div>
           </div>
 
-          {/* Mobile Journal Cards */}
-          <div className="space-y-3 md:hidden">
+          <BulkActionBar
+            selectedCount={journalSelection.selectedCount}
+            itemLabel="jurnal"
+            onClear={journalSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-jrn-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: () => {
+                  const picked = filteredJournals.filter((j) => journalSelection.isSelected(j.id));
+                  exportTableToCsv(
+                    'Jurnal_Umum_Terpilih',
+                    ['Tanggal', 'No Jurnal', 'Referensi', 'Tipe', 'Keterangan', 'Debit (IDR)', 'Kredit (IDR)', 'Status'],
+                    picked.map((j) => [
+                      j.entryDate,
+                      j.entryNumber,
+                      j.referenceNumber || '-',
+                      j.journalType,
+                      j.description,
+                      j.totalDebitIdr,
+                      j.totalCreditIdr,
+                      j.status,
+                    ])
+                  );
+                  toast.success(`${picked.length} jurnal diekspor ke CSV.`);
+                },
+              },
+              ...(canWrite
+                ? [
+                    {
+                      id: 'void-jrn',
+                      label: 'Void Terpilih',
+                      icon: <RotateCcw className="h-3.5 w-3.5" />,
+                      variant: 'outline' as const,
+                      requiresConfirm: true,
+                      confirmLabel: 'Konfirmasi Void',
+                      onClick: async () => {
+                        const postedIds = filteredJournals
+                          .filter((j) => journalSelection.isSelected(j.id) && j.status === 'Posted')
+                          .map((j) => j.id);
+                        if (postedIds.length === 0) {
+                          toast.info('Pilih minimal 1 jurnal berstatus Posted.');
+                          return;
+                        }
+                        const ok = await erp.bulkVoidJournalEntries(postedIds);
+                        if (ok) journalSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+              ...(isDirektur
+                ? [
+                    {
+                      id: 'delete-jrn',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: 'Konfirmasi Hapus',
+                      onClick: async () => {
+                        const ids = Array.from(journalSelection.selectedIds);
+                        const ok = await erp.bulkDeleteJournalEntries(ids);
+                        if (ok) journalSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
+          {/* Mobile Journal Select All + Bounded Scroll Cards */}
+          {filteredJournals.length > 0 && (
+            <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs md:hidden">
+              <label className="inline-flex items-center gap-2 font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={journalSelection.allVisibleSelected}
+                  indeterminate={journalSelection.someVisibleSelected}
+                  onChange={journalSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua jurnal"
+                />
+                <span>Pilih Semua ({filteredJournals.length})</span>
+              </label>
+              {journalSelection.selectedCount > 0 && (
+                <span className="font-semibold text-[#1B5E99]">
+                  {journalSelection.selectedCount} dipilih
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {filteredJournals.length === 0 ? (
               <Card>
                 <CardContent className="py-8 text-center text-xs text-slate-500">
@@ -1700,16 +2072,27 @@ export function AccountingView({ erp }: { erp: ErpController }) {
               </Card>
             ) : (
               filteredJournals.map((jrn) => (
-                <Card key={`m_jrn_${jrn.id}`} className={jrn.status === 'Void' ? 'opacity-65' : ''}>
+                <Card
+                  key={`m_jrn_${jrn.id}`}
+                  className={`${jrn.status === 'Void' ? 'opacity-65' : ''} ${journalSelection.isSelected(jrn.id) ? 'ring-2 ring-[#1B5E99]/40 bg-[#F4F8FD]' : ''}`}
+                >
                   <CardContent className="p-4 space-y-3 text-xs">
                     <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="font-mono font-bold text-[#0B1B3A] text-sm">
-                          {jrn.entryNumber}
-                        </div>
-                        <div className="text-[11px] text-slate-500 font-mono tabular-nums">
-                          {jrn.entryDate}
-                          {jrn.referenceNumber ? ` · ${jrn.referenceNumber}` : ''}
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <SelectCheckbox
+                          checked={journalSelection.isSelected(jrn.id)}
+                          onChange={() => journalSelection.toggleOne(jrn.id)}
+                          ariaLabel={`Pilih jurnal ${jrn.entryNumber}`}
+                          className="mt-0.5"
+                        />
+                        <div className="min-w-0">
+                          <div className="font-mono font-bold text-[#0B1B3A] text-sm">
+                            {jrn.entryNumber}
+                          </div>
+                          <div className="text-[11px] text-slate-500 font-mono tabular-nums">
+                            {jrn.entryDate}
+                            {jrn.referenceNumber ? ` · ${jrn.referenceNumber}` : ''}
+                          </div>
                         </div>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
@@ -1808,10 +2191,18 @@ export function AccountingView({ erp }: { erp: ErpController }) {
 
           {/* Desktop Journal Table */}
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={journalSelection.allVisibleSelected}
+                        indeterminate={journalSelection.someVisibleSelected}
+                        onChange={journalSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua jurnal"
+                      />
+                    </th>
                     <th className="py-3 px-3 font-semibold">Tanggal</th>
                     <th className="py-3 px-2.5 font-semibold">No. Jurnal / Ref</th>
                     <th className="py-3 px-2.5 font-semibold">Tipe</th>
@@ -1825,7 +2216,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                 <tbody className="divide-y divide-slate-100">
                   {filteredJournals.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="py-10 text-center text-slate-500">
+                      <td colSpan={9} className="py-10 text-center text-slate-500">
                         Belum ada dokumen jurnal pada filter saat ini.
                       </td>
                     </tr>
@@ -1833,8 +2224,15 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                     filteredJournals.map((jrn) => (
                       <tr
                         key={jrn.id}
-                        className={`hover:bg-[#F4F7FB] ${jrn.status === 'Void' ? 'opacity-60' : ''}`}
+                        className={`${jrn.status === 'Void' ? 'opacity-60' : ''} ${journalSelection.isSelected(jrn.id) ? 'bg-[#EFF5FB]/70' : 'hover:bg-[#F4F7FB]'}`}
                       >
+                        <td className="py-2.5 pl-4 pr-2">
+                          <SelectCheckbox
+                            checked={journalSelection.isSelected(jrn.id)}
+                            onChange={() => journalSelection.toggleOne(jrn.id)}
+                            ariaLabel={`Pilih jurnal ${jrn.entryNumber}`}
+                          />
+                        </td>
                         <td className="py-2.5 px-3 font-mono tabular-nums text-slate-600 whitespace-nowrap">
                           {jrn.entryDate}
                         </td>
@@ -1970,15 +2368,63 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                   <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-700" />
                   Excel
                 </Button>
-                <Button type="button" variant="outline" size="sm" onClick={handleExportTrialBalancePdf}>
-                  <FileText className="h-3.5 w-3.5 text-[#1B5E99]" />
-                  PDF
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    openPrintPreview(
+                      buildTableReportPrintDoc({
+                        documentTitle: 'NERACA SALDO (TRIAL BALANCE)',
+                        documentNumber: `TB-${new Date().toISOString().slice(0, 7).replace('-', '')}`,
+                        filenameBase: 'DomestiqHub_Neraca_Saldo',
+                        subtitle: `Periode: ${ledgerStartDate || 'Awal'} s/d ${ledgerEndDate || 'Sekarang'} | Status: ${
+                          trialBalance.isBalanced ? 'Seimbang (Balanced)' : 'Selisih Terdeteksi'
+                        }`,
+                        company: state.settings,
+                        orientation: 'landscape',
+                        columns: [
+                          { header: 'Kode', align: 'left', mono: true },
+                          { header: 'Nama Akun', align: 'left' },
+                          { header: 'Kategori', align: 'left' },
+                          { header: 'Saldo Awal', align: 'right', mono: true },
+                          { header: 'Mutasi Debit', align: 'right', mono: true },
+                          { header: 'Mutasi Kredit', align: 'right', mono: true },
+                          { header: 'Akhir Debit', align: 'right', mono: true, bold: true },
+                          { header: 'Akhir Kredit', align: 'right', mono: true, bold: true },
+                        ],
+                        rows: trialBalance.rows.map((r) => [
+                          r.account.code,
+                          r.account.name,
+                          r.account.category,
+                          formatCurrency(r.openingBalanceIdr),
+                          formatCurrency(r.periodDebitIdr),
+                          formatCurrency(r.periodCreditIdr),
+                          r.endingDebitIdr > 0 ? formatCurrency(r.endingDebitIdr) : '-',
+                          r.endingCreditIdr > 0 ? formatCurrency(r.endingCreditIdr) : '-',
+                        ]),
+                        totals: [
+                          { label: 'Total Mutasi Debit', value: formatCurrency(trialBalance.totalPeriodDebitIdr) },
+                          { label: 'Total Mutasi Kredit', value: formatCurrency(trialBalance.totalPeriodCreditIdr) },
+                          {
+                            label: 'Saldo Akhir (Debit / Kredit)',
+                            value: `${formatCurrency(trialBalance.totalEndingDebitIdr)} / ${formatCurrency(trialBalance.totalEndingCreditIdr)}`,
+                            isGrandTotal: true,
+                          },
+                        ],
+                      }),
+                      handleExportTrialBalancePdf
+                    )
+                  }
+                >
+                  <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
+                  Cetak Preview
                 </Button>
               </div>
             </CardHeader>
 
             {/* Mobile Trial Balance Cards */}
-            <div className="divide-y divide-slate-100 md:hidden">
+            <div className="divide-y divide-slate-100 md:hidden max-h-[480px] overflow-y-auto">
               {trialBalance.rows.map((r) => (
                 <div key={`m_tb_${r.account.id}`} className="p-3.5 space-y-2 text-xs">
                   <div className="flex items-start justify-between gap-2">
@@ -2014,7 +2460,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                   </div>
                 </div>
               ))}
-              <div className="p-3.5 bg-[#0B1B3A] text-white grid grid-cols-2 gap-2 text-xs font-semibold">
+              <div className="sticky bottom-0 p-3.5 bg-[#0B1B3A] text-white grid grid-cols-2 gap-2 text-xs font-semibold">
                 <div>
                   <span className="text-[10px] text-slate-300 block">Total Akhir Debit</span>
                   <span className="font-mono tabular-nums text-[#D9AA32]">
@@ -2031,9 +2477,9 @@ export function AccountingView({ erp }: { erp: ErpController }) {
             </div>
 
             {/* Desktop Trial Balance Table */}
-            <div className="overflow-x-auto hidden md:block">
+            <div className="max-h-[480px] overflow-auto hidden md:block">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
                     <th className="py-3 px-4 font-semibold">Kode</th>
                     <th className="py-3 px-3 font-semibold">Nama Akun</th>
@@ -2086,7 +2532,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                     </tr>
                   ))}
                 </tbody>
-                <tfoot className="bg-[#0B1B3A] text-white font-semibold">
+                <tfoot className="sticky bottom-0 z-10 bg-[#0B1B3A] text-white font-semibold">
                   <tr>
                     <td colSpan={4} className="py-3 px-4 text-right">
                       TOTAL NERACA SALDO
@@ -2140,11 +2586,47 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={handleExportIncomeStatementPdf}
-                    aria-label="Export Laba Rugi PDF"
+                    onClick={() =>
+                      openPrintPreview(
+                        buildTableReportPrintDoc({
+                          documentTitle: 'LAPORAN LABA RUGI (INCOME STATEMENT)',
+                          documentNumber: `LR-${new Date().toISOString().slice(0, 7).replace('-', '')}`,
+                          filenameBase: 'DomestiqHub_Laporan_Laba_Rugi',
+                          subtitle: `Periode: ${incomePeriodLabel}`,
+                          company: state.settings,
+                          orientation: 'portrait',
+                          columns: [
+                            { header: 'Bagian', align: 'left' },
+                            { header: 'Kode', align: 'left', mono: true },
+                            { header: 'Pos Akun / Keterangan', align: 'left' },
+                            { header: 'Nominal (IDR)', align: 'right', mono: true, bold: true },
+                          ],
+                          rows: [
+                            ...incomeStatement.revenues.map((r) => ['Pendapatan Usaha', r.code, r.name, formatCurrency(r.amountIdr)]),
+                            ['Subtotal', '-', 'Total Pendapatan Usaha', formatCurrency(incomeStatement.totalRevenueIdr)],
+                            ...incomeStatement.cogs.map((r) => ['HPP', r.code, r.name, formatCurrency(r.amountIdr)]),
+                            ['Subtotal', '-', 'Laba Kotor (Gross Profit)', formatCurrency(incomeStatement.grossProfitIdr)],
+                            ...incomeStatement.expenses.map((r) => ['Beban Operasional', r.code, r.name, formatCurrency(r.amountIdr)]),
+                            ['Subtotal', '-', 'Total Beban Operasional', formatCurrency(incomeStatement.totalExpensesIdr)],
+                          ],
+                          totals: [
+                            { label: 'Total Pendapatan', value: formatCurrency(incomeStatement.totalRevenueIdr) },
+                            { label: 'Laba Kotor', value: formatCurrency(incomeStatement.grossProfitIdr) },
+                            {
+                              label: 'Laba Bersih Periode Berjalan',
+                              value: formatCurrency(incomeStatement.netIncomeIdr),
+                              isGrandTotal: true,
+                              tone: incomeStatement.netIncomeIdr >= 0 ? 'success' : 'accent',
+                            },
+                          ],
+                        }),
+                        handleExportIncomeStatementPdf
+                      )
+                    }
+                    aria-label="Cetak Preview Laba Rugi"
                   >
-                    <FileText className="h-3.5 w-3.5 text-[#1B5E99]" />
-                    PDF
+                    <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
+                    Cetak Preview
                   </Button>
                 </div>
               </CardHeader>
@@ -2153,7 +2635,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                   <div className="font-semibold text-[#154C7E] mb-1.5">
                     Pendapatan Usaha
                   </div>
-                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg max-h-52 overflow-y-auto">
                     {incomeStatement.revenues.map((item) => (
                       <div key={item.accountId} className="flex justify-between gap-2 px-3 py-2">
                         <span className="min-w-0 truncate">
@@ -2165,7 +2647,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                         </span>
                       </div>
                     ))}
-                    <div className="flex justify-between gap-2 px-3 py-2 bg-slate-50 font-semibold">
+                    <div className="flex justify-between gap-2 px-3 py-2 bg-slate-50 font-semibold sticky bottom-0">
                       <span>Total Pendapatan</span>
                       <span className="font-mono tabular-nums">
                         {formatCurrency(incomeStatement.totalRevenueIdr)}
@@ -2178,7 +2660,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                   <div className="font-semibold text-[#8F670D] mb-1.5">
                     Harga Pokok Penjualan (HPP)
                   </div>
-                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg max-h-52 overflow-y-auto">
                     {incomeStatement.cogs.map((item) => (
                       <div key={item.accountId} className="flex justify-between gap-2 px-3 py-2">
                         <span className="min-w-0 truncate">
@@ -2190,7 +2672,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                         </span>
                       </div>
                     ))}
-                    <div className="flex justify-between gap-2 px-3 py-2 bg-[#EBF3FA]/60 font-bold text-[#0B1B3A]">
+                    <div className="flex justify-between gap-2 px-3 py-2 bg-[#EBF3FA]/60 font-bold text-[#0B1B3A] sticky bottom-0">
                       <span>Laba Kotor (Gross Profit)</span>
                       <span className="font-mono tabular-nums">
                         {formatCurrency(incomeStatement.grossProfitIdr)}
@@ -2203,7 +2685,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                   <div className="font-semibold text-red-700 mb-1.5">
                     Beban Operasional
                   </div>
-                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg max-h-52 overflow-y-auto">
                     {incomeStatement.expenses.map((item) => (
                       <div key={item.accountId} className="flex justify-between gap-2 px-3 py-2">
                         <span className="min-w-0 truncate">
@@ -2215,7 +2697,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                         </span>
                       </div>
                     ))}
-                    <div className="flex justify-between gap-2 px-3 py-2 bg-slate-50 font-semibold">
+                    <div className="flex justify-between gap-2 px-3 py-2 bg-slate-50 font-semibold sticky bottom-0">
                       <span>Total Beban Operasional</span>
                       <span className="font-mono tabular-nums">
                         {formatCurrency(incomeStatement.totalExpensesIdr)}
@@ -2247,7 +2729,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                   <div className="font-semibold text-[#154C7E] mb-1.5">
                     Aset (Assets)
                   </div>
-                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg max-h-60 overflow-y-auto">
                     {balanceSheet.assets.map((item) => (
                       <div key={item.accountId} className="flex justify-between gap-2 px-3 py-2">
                         <span className="min-w-0 truncate">
@@ -2259,7 +2741,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                         </span>
                       </div>
                     ))}
-                    <div className="flex justify-between gap-2 px-3 py-2 bg-[#EBF3FA]/60 font-bold text-[#0B1B3A]">
+                    <div className="flex justify-between gap-2 px-3 py-2 bg-[#EBF3FA]/60 font-bold text-[#0B1B3A] sticky bottom-0">
                       <span>Total Aset</span>
                       <span className="font-mono tabular-nums">
                         {formatCurrency(balanceSheet.totalAssetsIdr)}
@@ -2272,7 +2754,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                   <div className="font-semibold text-[#8F670D] mb-1.5">
                     Kewajiban &amp; Ekuitas (Liabilities &amp; Equity)
                   </div>
-                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg max-h-60 overflow-y-auto">
                     {balanceSheet.liabilities.map((item) => (
                       <div key={item.accountId} className="flex justify-between gap-2 px-3 py-2">
                         <span className="min-w-0 truncate">
@@ -2295,7 +2777,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                         </span>
                       </div>
                     ))}
-                    <div className="flex justify-between gap-2 px-3 py-2 bg-[#FDF7E3]/60">
+                    <div className="flex justify-between gap-2 px-3 py-2 bg-[#FDF7E3]/60 sticky bottom-0">
                       <span className="font-medium text-[#8F670D]">
                         Laba Periode Berjalan (Otomatis Laba Rugi)
                       </span>
@@ -2350,17 +2832,60 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={handleExportMonthlyPdf}
-                  aria-label="Export Performa Bulanan PDF"
+                  onClick={() =>
+                    openPrintPreview(
+                      buildTableReportPrintDoc({
+                        documentTitle: 'LAPORAN PERFORMA BULANAN (MONTHLY PERFORMANCE)',
+                        documentNumber: `PERF-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`,
+                        filenameBase: 'DomestiqHub_Performa_Bulanan',
+                        subtitle: `Akumulasi ${monthlyPerformance.months.length} bulan`,
+                        company: state.settings,
+                        orientation: 'landscape',
+                        columns: [
+                          { header: 'Bulan', align: 'left', bold: true },
+                          { header: 'Omzet (IDR)', align: 'right', mono: true },
+                          { header: 'HPP (IDR)', align: 'right', mono: true },
+                          { header: 'Laba Kotor', align: 'right', mono: true },
+                          { header: 'Margin %', align: 'right', mono: true },
+                          { header: 'Beban OpEx', align: 'right', mono: true },
+                          { header: 'Laba Bersih', align: 'right', mono: true, bold: true },
+                          { header: 'Nilai PO', align: 'right', mono: true },
+                          { header: 'Nilai SO', align: 'right', mono: true },
+                        ],
+                        rows: monthlyPerformance.months.map((m) => [
+                          m.monthLabel,
+                          formatCurrency(m.revenueIdr),
+                          formatCurrency(m.cogsIdr),
+                          formatCurrency(m.grossProfitIdr),
+                          `${m.grossMarginPercent.toFixed(1)}%`,
+                          formatCurrency(m.operatingExpensesIdr),
+                          formatCurrency(m.netIncomeIdr),
+                          formatCurrency(m.poTotalIdr),
+                          formatCurrency(m.soTotalIdr),
+                        ]),
+                        totals: [
+                          { label: 'Total Omzet', value: formatCurrency(monthlyPerformance.totalRevenueIdr) },
+                          {
+                            label: 'Total Laba Bersih',
+                            value: formatCurrency(monthlyPerformance.totalNetIncomeIdr),
+                            isGrandTotal: true,
+                            tone: monthlyPerformance.totalNetIncomeIdr >= 0 ? 'success' : 'accent',
+                          },
+                        ],
+                      }),
+                      handleExportMonthlyPdf
+                    )
+                  }
+                  aria-label="Cetak Preview Performa Bulanan"
                 >
-                  <FileText className="h-3.5 w-3.5 text-[#1B5E99]" />
-                  PDF
+                  <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
+                  Cetak Preview
                 </Button>
               </div>
             </CardHeader>
 
             {/* Mobile Monthly Performance Cards */}
-            <div className="divide-y divide-slate-100 md:hidden">
+            <div className="divide-y divide-slate-100 md:hidden max-h-[480px] overflow-y-auto">
               {monthlyPerformance.months.length === 0 ? (
                 <div className="py-8 text-center text-xs text-slate-500">
                   Belum ada transaksi jurnal maupun order untuk dihitung per bulan.
@@ -2410,9 +2935,9 @@ export function AccountingView({ erp }: { erp: ErpController }) {
             </div>
 
             {/* Desktop Monthly Performance Table */}
-            <div className="overflow-x-auto hidden md:block">
+            <div className="max-h-[480px] overflow-auto hidden md:block">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
                     <th className="py-3 px-4 font-semibold">Bulan</th>
                     <th className="py-3 px-3 font-semibold text-right">Omzet (Revenue)</th>
@@ -2472,7 +2997,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                     ))
                   )}
                 </tbody>
-                <tfoot className="bg-[#0B1B3A] text-white font-semibold">
+                <tfoot className="sticky bottom-0 z-10 bg-[#0B1B3A] text-white font-semibold">
                   <tr>
                     <td className="py-3 px-4">TOTAL AKUMULASI</td>
                     <td className="py-3 px-3 text-right font-mono tabular-nums">
@@ -2545,19 +3070,96 @@ export function AccountingView({ erp }: { erp: ErpController }) {
             )}
           </div>
 
-          {/* Mobile CoA Cards */}
-          <div className="space-y-2.5 md:hidden">
+          <BulkActionBar
+            selectedCount={coaSelection.selectedCount}
+            itemLabel="akun CoA"
+            onClear={coaSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-coa-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: () => {
+                  const picked = filteredCoaRows.filter((r) => coaSelection.isSelected(r.account.id));
+                  exportTableToCsv(
+                    'Daftar_Akun_CoA_Terpilih',
+                    ['Kode Akun', 'Nama Akun', 'Kategori', 'Saldo Normal', 'Saldo Berjalan (IDR)', 'Status'],
+                    picked.map((r) => [
+                      r.account.code,
+                      r.account.name,
+                      r.account.category,
+                      r.account.normalBalance,
+                      r.closingBalanceIdr,
+                      r.account.active ? 'Aktif' : 'Nonaktif',
+                    ])
+                  );
+                  toast.success(`${picked.length} akun CoA diekspor ke CSV.`);
+                },
+              },
+              ...(isDirektur
+                ? [
+                    {
+                      id: 'delete-coa',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: 'Konfirmasi Hapus',
+                      onClick: async () => {
+                        const ids = Array.from(coaSelection.selectedIds);
+                        const ok = await erp.bulkDeleteChartAccounts(ids);
+                        if (ok) coaSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
+          {/* Mobile CoA Select All + Bounded Scroll Cards */}
+          {filteredCoaRows.length > 0 && (
+            <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs md:hidden">
+              <label className="inline-flex items-center gap-2 font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={coaSelection.allVisibleSelected}
+                  indeterminate={coaSelection.someVisibleSelected}
+                  onChange={coaSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua akun CoA"
+                />
+                <span>Pilih Semua ({filteredCoaRows.length})</span>
+              </label>
+              {coaSelection.selectedCount > 0 && (
+                <span className="font-semibold text-[#1B5E99]">
+                  {coaSelection.selectedCount} dipilih
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-2.5 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {filteredCoaRows.map((r) => (
-              <Card key={`m_coa_${r.account.id}`}>
+              <Card
+                key={`m_coa_${r.account.id}`}
+                className={coaSelection.isSelected(r.account.id) ? 'ring-2 ring-[#1B5E99]/40 bg-[#F4F8FD]' : ''}
+              >
                 <CardContent className="p-3.5 space-y-2.5 text-xs">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="font-bold text-[#0B1B3A]">
-                        <span className="font-mono text-[#1B5E99] mr-1.5">{r.account.code}</span>
-                        {r.account.name}
-                      </div>
-                      <div className="text-[11px] text-slate-500">
-                        Normal: {r.account.normalBalance} · {r.account.active ? 'Aktif' : 'Nonaktif'}
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <SelectCheckbox
+                        checked={coaSelection.isSelected(r.account.id)}
+                        onChange={() => coaSelection.toggleOne(r.account.id)}
+                        ariaLabel={`Pilih akun ${r.account.code}`}
+                        className="mt-0.5"
+                      />
+                      <div className="min-w-0">
+                        <div className="font-bold text-[#0B1B3A]">
+                          <span className="font-mono text-[#1B5E99] mr-1.5">{r.account.code}</span>
+                          {r.account.name}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          Normal: {r.account.normalBalance} · {r.account.active ? 'Aktif' : 'Nonaktif'}
+                        </div>
                       </div>
                     </div>
                     <StatusLabel
@@ -2627,11 +3229,19 @@ export function AccountingView({ erp }: { erp: ErpController }) {
 
           {/* Desktop CoA Table */}
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4 font-semibold">Kode Akun</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={coaSelection.allVisibleSelected}
+                        indeterminate={coaSelection.someVisibleSelected}
+                        onChange={coaSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua akun CoA"
+                      />
+                    </th>
+                    <th className="py-3 px-3 font-semibold">Kode Akun</th>
                     <th className="py-3 px-3 font-semibold">Nama Akun</th>
                     <th className="py-3 px-3 font-semibold">Kategori</th>
                     <th className="py-3 px-3 font-semibold">Saldo Normal</th>
@@ -2641,88 +3251,106 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredCoaRows.map((r) => (
-                    <tr key={r.account.id} className="hover:bg-[#F4F7FB]">
-                      <td className="py-3 px-4 font-mono font-bold text-[#0B1B3A]">
-                        {r.account.code}
+                  {filteredCoaRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="py-10 text-center text-slate-500">
+                        Tidak ada akun CoA pada filter saat ini.
                       </td>
-                      <td className="py-3 px-3">
-                        <div className="font-semibold text-[#0B1B3A]">{r.account.name}</div>
-                        {r.account.description && (
-                          <div className="text-[11px] text-slate-500">{r.account.description}</div>
-                        )}
-                      </td>
-                      <td className="py-3 px-3">
-                        <StatusLabel
-                          status={r.account.category}
-                          tone={getCategoryTone(r.account.category)}
-                        />
-                      </td>
-                      <td className="py-3 px-3 font-mono text-slate-600">
-                        {r.account.normalBalance}
-                      </td>
-                      <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-[#0B1B3A]">
-                        {formatCurrency(r.closingBalanceIdr)}
-                      </td>
-                      <td className="py-3 px-3">
-                        <StatusLabel
-                          status={r.account.active ? 'Aktif' : 'Nonaktif'}
-                          tone={r.account.active ? 'success' : 'neutral'}
-                        />
-                      </td>
-                      <td className="py-3 px-4 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => {
-                              setSelectedAccountId(r.account.id);
-                              setActiveTab('ledger');
-                            }}
-                          >
-                            <Layers className="h-3.5 w-3.5" />
-                            Buku Besar
-                          </Button>
-                          {canWrite && (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => openCoaModal(r.account)}
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                              Edit
-                            </Button>
+                    </tr>
+                  ) : (
+                    filteredCoaRows.map((r) => (
+                      <tr
+                        key={r.account.id}
+                        className={coaSelection.isSelected(r.account.id) ? 'bg-[#EFF5FB]/70' : 'hover:bg-[#F4F7FB]'}
+                      >
+                        <td className="py-3 pl-4 pr-2">
+                          <SelectCheckbox
+                            checked={coaSelection.isSelected(r.account.id)}
+                            onChange={() => coaSelection.toggleOne(r.account.id)}
+                            ariaLabel={`Pilih akun ${r.account.code}`}
+                          />
+                        </td>
+                        <td className="py-3 px-3 font-mono font-bold text-[#0B1B3A]">
+                          {r.account.code}
+                        </td>
+                        <td className="py-3 px-3">
+                          <div className="font-semibold text-[#0B1B3A]">{r.account.name}</div>
+                          {r.account.description && (
+                            <div className="text-[11px] text-slate-500">{r.account.description}</div>
                           )}
-                          {isDirektur && (
+                        </td>
+                        <td className="py-3 px-3">
+                          <StatusLabel
+                            status={r.account.category}
+                            tone={getCategoryTone(r.account.category)}
+                          />
+                        </td>
+                        <td className="py-3 px-3 font-mono text-slate-600">
+                          {r.account.normalBalance}
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-[#0B1B3A]">
+                          {formatCurrency(r.closingBalanceIdr)}
+                        </td>
+                        <td className="py-3 px-3">
+                          <StatusLabel
+                            status={r.account.active ? 'Aktif' : 'Nonaktif'}
+                            tone={r.account.active ? 'success' : 'neutral'}
+                          />
+                        </td>
+                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-1">
                             <Button
                               type="button"
                               variant="ghost"
-                              size="icon"
-                              aria-label={`Hapus akun ${r.account.code}`}
-                              title="Hapus akun CoA"
-                              className="text-red-600 hover:bg-red-50"
-                              onClick={() =>
-                                setConfirmDialog({
-                                  title: `Hapus Akun ${r.account.code} — ${r.account.name}?`,
-                                  description:
-                                    'Akun CoA ini akan dihapus permanen dari daftar akun perusahaan.',
-                                  confirmLabel: 'Hapus Akun',
-                                  tone: 'danger',
-                                  onConfirm: async () => {
-                                    await erp.deleteChartAccount(r.account.id);
-                                  },
-                                })
-                              }
+                              size="sm"
+                              onClick={() => {
+                                setSelectedAccountId(r.account.id);
+                                setActiveTab('ledger');
+                              }}
                             >
-                              <Trash2 className="h-3.5 w-3.5" />
+                              <Layers className="h-3.5 w-3.5" />
+                              Buku Besar
                             </Button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                            {canWrite && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => openCoaModal(r.account)}
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                                Edit
+                              </Button>
+                            )}
+                            {isDirektur && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                aria-label={`Hapus akun ${r.account.code}`}
+                                title="Hapus akun CoA"
+                                className="text-red-600 hover:bg-red-50"
+                                onClick={() =>
+                                  setConfirmDialog({
+                                    title: `Hapus Akun ${r.account.code} — ${r.account.name}?`,
+                                    description:
+                                      'Akun CoA ini akan dihapus permanen dari daftar akun perusahaan.',
+                                    confirmLabel: 'Hapus Akun',
+                                    tone: 'danger',
+                                    onConfirm: async () => {
+                                      await erp.deleteChartAccount(r.account.id);
+                                    },
+                                  })
+                                }
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -2756,8 +3384,78 @@ export function AccountingView({ erp }: { erp: ErpController }) {
             </NativeSelect>
           </div>
 
-          {/* Mobile AP/AR Invoice Cards */}
-          <div className="space-y-3 md:hidden">
+          <BulkActionBar
+            selectedCount={invoiceSelection.selectedCount}
+            itemLabel="invoice"
+            onClear={invoiceSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-inv-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: () => {
+                  const picked = filteredInvoices.filter((inv) => invoiceSelection.isSelected(inv.id));
+                  exportTableToCsv(
+                    'Hutang_Piutang_Terpilih',
+                    ['Nomor Invoice', 'Jenis', 'Partner', 'Ref Order', 'Jatuh Tempo', 'Mata Uang', 'Total', 'Dibayar', 'Sisa', 'Status'],
+                    picked.map((inv) => [
+                      inv.invoiceNumber || '-',
+                      inv.ledgerType || '-',
+                      inv.counterpartyName || '-',
+                      inv.referenceOrderNumber || '-',
+                      inv.dueDate || '-',
+                      inv.currency || 'IDR',
+                      inv.totalAmount ?? 0,
+                      inv.paidAmount ?? 0,
+                      inv.balanceDue ?? 0,
+                      inv.status || '-',
+                    ])
+                  );
+                  toast.success(`${picked.length} invoice diekspor ke CSV.`);
+                },
+              },
+              ...(isDirektur
+                ? [
+                    {
+                      id: 'delete-inv',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: 'Konfirmasi Hapus',
+                      onClick: async () => {
+                        const ids = Array.from(invoiceSelection.selectedIds);
+                        const ok = await erp.bulkDeleteInvoices(ids);
+                        if (ok) invoiceSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
+          {/* Mobile AP/AR Select All + Bounded Scroll Cards */}
+          {filteredInvoices.length > 0 && (
+            <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs md:hidden">
+              <label className="inline-flex items-center gap-2 font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={invoiceSelection.allVisibleSelected}
+                  indeterminate={invoiceSelection.someVisibleSelected}
+                  onChange={invoiceSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua invoice"
+                />
+                <span>Pilih Semua ({filteredInvoices.length})</span>
+              </label>
+              {invoiceSelection.selectedCount > 0 && (
+                <span className="font-semibold text-[#1B5E99]">
+                  {invoiceSelection.selectedCount} dipilih
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {filteredInvoices.map((inv) => {
               const idrBalance = convertToIdr(
                 inv.balanceDue,
@@ -2779,37 +3477,48 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                     )
                   : undefined;
               return (
-                <Card key={`m_inv_${inv.id}`}>
+                <Card
+                  key={`m_inv_${inv.id}`}
+                  className={invoiceSelection.isSelected(inv.id) ? 'ring-2 ring-[#1B5E99]/40 bg-[#F4F8FD]' : ''}
+                >
                   <CardContent className="p-4 space-y-2.5 text-xs">
                     <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="font-mono font-bold text-[#0B1B3A] text-sm">
-                          {inv.invoiceNumber}
-                        </div>
-                        <div className="font-medium text-slate-700">{inv.counterpartyName}</div>
-                        <div className="text-[11px] text-slate-500 font-mono">
-                          {inv.referenceOrderNumber || '-'} · Jatuh Tempo: {inv.dueDate}
-                        </div>
-                        {inv.ledgerType === 'AR' && (
-                          <div className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-600 font-mono">
-                            <span>FP: {inv.taxInvoiceNumber || linkedSo?.taxInvoiceNumber || '-'}</span>
-                            {canWrite && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setTaxModalInv({
-                                    inv,
-                                    taxNo: inv.taxInvoiceNumber || linkedSo?.taxInvoiceNumber || '',
-                                  })
-                                }
-                                className="inline-flex items-center text-[#1B5E99] hover:underline"
-                                title="Edit No. Faktur Pajak"
-                              >
-                                <Pencil className="h-3 w-3" />
-                              </button>
-                            )}
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <SelectCheckbox
+                          checked={invoiceSelection.isSelected(inv.id)}
+                          onChange={() => invoiceSelection.toggleOne(inv.id)}
+                          ariaLabel={`Pilih invoice ${inv.invoiceNumber}`}
+                          className="mt-0.5"
+                        />
+                        <div className="min-w-0">
+                          <div className="font-mono font-bold text-[#0B1B3A] text-sm">
+                            {inv.invoiceNumber}
                           </div>
-                        )}
+                          <div className="font-medium text-slate-700">{inv.counterpartyName}</div>
+                          <div className="text-[11px] text-slate-500 font-mono">
+                            {inv.referenceOrderNumber || '-'} · Jatuh Tempo: {inv.dueDate}
+                          </div>
+                          {inv.ledgerType === 'AR' && (
+                            <div className="mt-1 flex items-center gap-1.5 text-[11px] text-slate-600 font-mono">
+                              <span>FP: {inv.taxInvoiceNumber || linkedSo?.taxInvoiceNumber || '-'}</span>
+                              {canWrite && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setTaxModalInv({
+                                      inv,
+                                      taxNo: inv.taxInvoiceNumber || linkedSo?.taxInvoiceNumber || '',
+                                    })
+                                  }
+                                  className="inline-flex items-center text-[#1B5E99] hover:underline"
+                                  title="Edit No. Faktur Pajak"
+                                >
+                                  <Pencil className="h-3 w-3" />
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
                       <div className="flex flex-col items-end gap-1 shrink-0">
                         <StatusLabel status={inv.status} tone={getInvTone(inv.status)} />
@@ -2845,7 +3554,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                         variant="outline"
                         size="sm"
                         className="flex-1"
-                        aria-label={`Cetak Invoice ${inv.invoiceNumber}`}
+                        aria-label={`Cetak Preview Invoice ${inv.invoiceNumber}`}
                         onClick={() =>
                           openPrintPreview(
                             buildSalesInvoicePrintDoc(
@@ -2867,25 +3576,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                         }
                       >
                         <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                        Cetak
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="flex-1"
-                        onClick={() =>
-                          void exportSalesInvoicePdf(
-                            inv,
-                            state.settings,
-                            linkedCustomer,
-                            linkedSo,
-                            linkedSupplier
-                          )
-                        }
-                      >
-                        <FileText className="h-3.5 w-3.5 text-[#1B5E99]" />
-                        PDF
+                        Cetak Preview
                       </Button>
                       {(inv.payments || []).length > 0 && (
                         <Button
@@ -2944,11 +3635,19 @@ export function AccountingView({ erp }: { erp: ErpController }) {
 
           {/* Desktop AP/AR Table */}
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4 font-semibold">Nomor Invoice</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={invoiceSelection.allVisibleSelected}
+                        indeterminate={invoiceSelection.someVisibleSelected}
+                        onChange={invoiceSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua invoice"
+                      />
+                    </th>
+                    <th className="py-3 px-3 font-semibold">Nomor Invoice</th>
                     <th className="py-3 px-3 font-semibold">Jenis</th>
                     <th className="py-3 px-3 font-semibold">Partner (Supplier / Customer)</th>
                     <th className="py-3 px-3 font-semibold">Ref Order / Faktur Pajak</th>
@@ -2961,188 +3660,188 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredInvoices.map((inv) => {
-                    const idrBalance = convertToIdr(
-                      inv.balanceDue,
-                      inv.currency,
-                      inv.exchangeRate || rate
-                    );
-                    const linkedCustomer =
-                      inv.ledgerType === 'AR'
-                        ? state.customers.find((c) => c.id === inv.counterpartyId)
-                        : undefined;
-                    const linkedSupplier =
-                      inv.ledgerType === 'AP'
-                        ? state.suppliers.find((s) => s.id === inv.counterpartyId)
-                        : undefined;
-                    const linkedSo =
-                      inv.ledgerType === 'AR'
-                        ? state.salesOrders.find(
-                            (s) => s.id === inv.referenceOrderId || s.soNumber === inv.referenceOrderNumber
-                          )
-                        : undefined;
-                    return (
-                      <tr key={inv.id} className="hover:bg-[#F4F7FB]">
-                        <td className="py-3 px-4 font-mono font-semibold text-[#0B1B3A]">
-                          {inv.invoiceNumber}
-                        </td>
-                        <td className="py-3 px-3">
-                          <StatusLabel
-                            status={inv.ledgerType === 'AP' ? 'AP (Hutang)' : 'AR (Piutang)'}
-                            tone={inv.ledgerType === 'AP' ? 'warning' : 'info'}
-                          />
-                        </td>
-                        <td className="py-3 px-3 font-medium text-slate-800">
-                          {inv.counterpartyName}
-                        </td>
-                        <td className="py-3 px-3 font-mono text-slate-500">
-                          <div>{inv.referenceOrderNumber || '-'}</div>
-                          {inv.ledgerType === 'AR' && (
-                            <div className="mt-0.5 flex items-center gap-1 text-[10px] text-slate-500">
-                              <span>FP: {inv.taxInvoiceNumber || linkedSo?.taxInvoiceNumber || '-'}</span>
-                              {canWrite && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setTaxModalInv({
-                                      inv,
-                                      taxNo: inv.taxInvoiceNumber || linkedSo?.taxInvoiceNumber || '',
-                                    })
-                                  }
-                                  className="text-[#1B5E99] hover:underline"
-                                  title="Edit No. Seri Faktur Pajak"
-                                >
-                                  <Pencil className="h-3 w-3" />
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </td>
-                        <td className="py-3 px-3 font-mono tabular-nums text-slate-600">
-                          {inv.dueDate}
-                        </td>
-                        <td className="py-3 px-3 text-right font-mono tabular-nums">
-                          {formatCurrency(inv.totalAmount, inv.currency)}
-                        </td>
-                        <td className="py-3 px-3 text-right font-mono tabular-nums text-emerald-700">
-                          {formatCurrency(inv.paidAmount, inv.currency)}
-                        </td>
-                        <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold">
-                          <div>{formatCurrency(inv.balanceDue, inv.currency)}</div>
-                          {inv.currency === 'USD' && inv.balanceDue > 0 && (
-                            <div className="text-[10px] text-slate-400">
-                              ≈ {formatCurrency(idrBalance, 'IDR')}
-                            </div>
-                          )}
-                        </td>
-                        <td className="py-3 px-3">
-                          <StatusLabel status={inv.status} tone={getInvTone(inv.status)} />
-                        </td>
-                        <td className="py-3 px-4 text-right">
-                          <div className="flex flex-wrap justify-end gap-1.5">
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              aria-label={`Cetak Invoice ${inv.invoiceNumber}`}
-                              title="Tampilkan Pratinjau & Cetak A4"
-                              onClick={() =>
-                                openPrintPreview(
-                                  buildSalesInvoicePrintDoc(
-                                    inv,
-                                    state.settings,
-                                    linkedCustomer,
-                                    linkedSo,
-                                    linkedSupplier
-                                  ),
-                                  () =>
-                                    exportSalesInvoicePdf(
+                  {filteredInvoices.length === 0 ? (
+                    <tr>
+                      <td colSpan={11} className="py-10 text-center text-slate-500">
+                        Tidak ada tagihan AP/AR pada filter saat ini.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredInvoices.map((inv) => {
+                      const idrBalance = convertToIdr(
+                        inv.balanceDue,
+                        inv.currency,
+                        inv.exchangeRate || rate
+                      );
+                      const linkedCustomer =
+                        inv.ledgerType === 'AR'
+                          ? state.customers.find((c) => c.id === inv.counterpartyId)
+                          : undefined;
+                      const linkedSupplier =
+                        inv.ledgerType === 'AP'
+                          ? state.suppliers.find((s) => s.id === inv.counterpartyId)
+                          : undefined;
+                      const linkedSo =
+                        inv.ledgerType === 'AR'
+                          ? state.salesOrders.find(
+                              (s) => s.id === inv.referenceOrderId || s.soNumber === inv.referenceOrderNumber
+                            )
+                          : undefined;
+                      return (
+                        <tr
+                          key={inv.id}
+                          className={invoiceSelection.isSelected(inv.id) ? 'bg-[#EFF5FB]/70' : 'hover:bg-[#F4F7FB]'}
+                        >
+                          <td className="py-3 pl-4 pr-2">
+                            <SelectCheckbox
+                              checked={invoiceSelection.isSelected(inv.id)}
+                              onChange={() => invoiceSelection.toggleOne(inv.id)}
+                              ariaLabel={`Pilih invoice ${inv.invoiceNumber}`}
+                            />
+                          </td>
+                          <td className="py-3 px-3 font-mono font-semibold text-[#0B1B3A]">
+                            {inv.invoiceNumber}
+                          </td>
+                          <td className="py-3 px-3">
+                            <StatusLabel
+                              status={inv.ledgerType === 'AP' ? 'AP (Hutang)' : 'AR (Piutang)'}
+                              tone={inv.ledgerType === 'AP' ? 'warning' : 'info'}
+                            />
+                          </td>
+                          <td className="py-3 px-3 font-medium text-slate-800">
+                            {inv.counterpartyName}
+                          </td>
+                          <td className="py-3 px-3 font-mono text-slate-500">
+                            <div>{inv.referenceOrderNumber || '-'}</div>
+                            {inv.ledgerType === 'AR' && (
+                              <div className="mt-0.5 flex items-center gap-1 text-[10px] text-slate-500">
+                                <span>FP: {inv.taxInvoiceNumber || linkedSo?.taxInvoiceNumber || '-'}</span>
+                                {canWrite && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setTaxModalInv({
+                                        inv,
+                                        taxNo: inv.taxInvoiceNumber || linkedSo?.taxInvoiceNumber || '',
+                                      })
+                                    }
+                                    className="text-[#1B5E99] hover:underline"
+                                    title="Edit No. Seri Faktur Pajak"
+                                  >
+                                    <Pencil className="h-3 w-3" />
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 font-mono tabular-nums text-slate-600">
+                            {inv.dueDate}
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono tabular-nums">
+                            {formatCurrency(inv.totalAmount, inv.currency)}
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono tabular-nums text-emerald-700">
+                            {formatCurrency(inv.paidAmount, inv.currency)}
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold">
+                            <div>{formatCurrency(inv.balanceDue, inv.currency)}</div>
+                            {inv.currency === 'USD' && inv.balanceDue > 0 && (
+                              <div className="text-[10px] text-slate-400">
+                                ≈ {formatCurrency(idrBalance, 'IDR')}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-3 px-3">
+                            <StatusLabel status={inv.status} tone={getInvTone(inv.status)} />
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <div className="flex flex-wrap justify-end gap-1.5">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                aria-label={`Cetak Preview Invoice ${inv.invoiceNumber}`}
+                                title="Tampilkan Pratinjau, Cetak A4 & Unduh PDF"
+                                onClick={() =>
+                                  openPrintPreview(
+                                    buildSalesInvoicePrintDoc(
                                       inv,
                                       state.settings,
                                       linkedCustomer,
                                       linkedSo,
                                       linkedSupplier
-                                    )
-                                )
-                              }
-                            >
-                              <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                              Cetak
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              title="Unduh Invoice Resmi PDF"
-                              onClick={() =>
-                                void exportSalesInvoicePdf(
-                                  inv,
-                                  state.settings,
-                                  linkedCustomer,
-                                  linkedSo,
-                                  linkedSupplier
-                                )
-                              }
-                            >
-                              <FileText className="h-3.5 w-3.5 text-[#1B5E99]" />
-                              PDF
-                            </Button>
-                            {(inv.payments || []).length > 0 && (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                title="Cetak Kwitansi Pembayaran"
-                                onClick={() => setReceiptModalInv(inv)}
-                              >
-                                <Receipt className="h-3.5 w-3.5 text-emerald-700" />
-                                Kwitansi
-                              </Button>
-                            )}
-                            {canWrite && inv.balanceDue > 0 ? (
-                              <Button
-                                type="button"
-                                variant="accent"
-                                size="sm"
-                                onClick={() => openPaymentModal(inv)}
-                              >
-                                <CreditCard className="h-3.5 w-3.5" />
-                                Bayar
-                              </Button>
-                            ) : inv.balanceDue <= 0 ? (
-                              <span className="inline-flex items-center px-1.5 text-[11px] font-semibold text-emerald-700">
-                                Lunas
-                              </span>
-                            ) : null}
-                            {isDirektur && (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                aria-label={`Hapus invoice ${inv.invoiceNumber}`}
-                                title="Hapus invoice permanen"
-                                className="text-red-600 hover:bg-red-50"
-                                onClick={() =>
-                                  setConfirmDialog({
-                                    title: `Hapus Invoice ${inv.invoiceNumber}?`,
-                                    description:
-                                      'Catatan tagihan beserta riwayat cicilan pada invoice ini akan dihapus permanen.',
-                                    confirmLabel: 'Hapus Invoice',
-                                    tone: 'danger',
-                                    onConfirm: async () => {
-                                      await erp.deleteInvoice(inv.id);
-                                    },
-                                  })
+                                    ),
+                                    () =>
+                                      exportSalesInvoicePdf(
+                                        inv,
+                                        state.settings,
+                                        linkedCustomer,
+                                        linkedSo,
+                                        linkedSupplier
+                                      )
+                                  )
                                 }
                               >
-                                <Trash2 className="h-3.5 w-3.5" />
+                                <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
+                                Cetak Preview
                               </Button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                              {(inv.payments || []).length > 0 && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  title="Cetak Kwitansi Pembayaran"
+                                  onClick={() => setReceiptModalInv(inv)}
+                                >
+                                  <Receipt className="h-3.5 w-3.5 text-emerald-700" />
+                                  Kwitansi
+                                </Button>
+                              )}
+                              {canWrite && inv.balanceDue > 0 ? (
+                                <Button
+                                  type="button"
+                                  variant="accent"
+                                  size="sm"
+                                  onClick={() => openPaymentModal(inv)}
+                                >
+                                  <CreditCard className="h-3.5 w-3.5" />
+                                  Bayar
+                                </Button>
+                              ) : inv.balanceDue <= 0 ? (
+                                <span className="inline-flex items-center px-1.5 text-[11px] font-semibold text-emerald-700">
+                                  Lunas
+                                </span>
+                              ) : null}
+                              {isDirektur && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label={`Hapus invoice ${inv.invoiceNumber}`}
+                                  title="Hapus invoice permanen"
+                                  className="text-red-600 hover:bg-red-50"
+                                  onClick={() =>
+                                    setConfirmDialog({
+                                      title: `Hapus Invoice ${inv.invoiceNumber}?`,
+                                      description:
+                                        'Catatan tagihan beserta riwayat cicilan pada invoice ini akan dihapus permanen.',
+                                      confirmLabel: 'Hapus Invoice',
+                                      tone: 'danger',
+                                      onConfirm: async () => {
+                                        await erp.deleteInvoice(inv.id);
+                                      },
+                                    })
+                                  }
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
@@ -3301,7 +4000,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                     Belum ada periode akuntansi yang dikunci.
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
                     {state.periodClosings
                       .slice()
                       .sort((a, b) => b.periodKey.localeCompare(a.periodKey))
@@ -3497,7 +4196,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                 </div>
               ) : (
                 <>
-                  <div className="space-y-3 p-4 md:hidden">
+                  <div className="space-y-3 p-4 md:hidden max-h-[480px] overflow-y-auto">
                     {budgetRows.map((b) => {
                       const budgetDoc = state.budgets.find((x) => x.periodKey === b.periodKey);
                       return (
@@ -3558,9 +4257,9 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                       );
                     })}
                   </div>
-                  <div className="hidden md:block overflow-x-auto">
+                  <div className="hidden md:block max-h-[480px] overflow-auto">
                     <table className="w-full text-left text-xs">
-                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                      <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-slate-600 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                         <tr>
                           <th className="py-3 px-4 font-semibold">Periode</th>
                           <th className="py-3 px-3 font-semibold text-right">Target Omzet</th>
@@ -4509,7 +5208,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                       <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
                         Riwayat Cicilan
                       </div>
-                      <div className="space-y-1.5">
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
                         {(payInvoice.payments || []).map((pm) => (
                           <div
                             key={pm.id}
@@ -4535,17 +5234,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                                 }
                               >
                                 <Printer className="h-3 w-3 text-[#0B1B3A]" />
-                                Cetak
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                className="h-7 px-2 text-[11px]"
-                                onClick={() => void exportPaymentReceiptPdf(payInvoice, pm, state.settings)}
-                              >
-                                <Receipt className="h-3 w-3 text-emerald-700" />
-                                PDF
+                                Cetak Preview
                               </Button>
                             </div>
                           </div>
@@ -4675,7 +5364,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                 </DialogDescription>
               </DialogHeader>
               <DialogBody>
-                <div className="space-y-2">
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                   {(receiptModalInv.payments || []).length === 0 ? (
                     <p className="text-xs text-slate-500">Belum ada pembayaran tercatat.</p>
                   ) : (
@@ -4708,16 +5397,7 @@ export function AccountingView({ erp }: { erp: ErpController }) {
                             }
                           >
                             <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                            Cetak A4
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => void exportPaymentReceiptPdf(receiptModalInv, pm, state.settings)}
-                          >
-                            <Receipt className="h-3.5 w-3.5 text-emerald-700" />
-                            PDF
+                            Cetak Preview
                           </Button>
                         </div>
                       </div>

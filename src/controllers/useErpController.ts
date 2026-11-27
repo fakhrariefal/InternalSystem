@@ -4917,6 +4917,522 @@ export function useErpController() {
     [authMode, currentUser]
   );
 
+  // =========================================================================
+  // Bulk Action Handlers (List Multi-Select Operations)
+  // =========================================================================
+  const bulkDeleteFlatCollection = useCallback(
+    async <K extends keyof ErpState>(
+      stateKey: K,
+      firestoreCol: string,
+      ids: string[],
+      auditModule: string,
+      label: string
+    ): Promise<number> => {
+      if (!currentUser || !hasPermission(currentUser.role, 'master:users')) {
+        toast.error(`Hanya Direktur yang dapat menghapus massal ${label}.`);
+        return 0;
+      }
+      const uniqueIds = Array.from(new Set(ids)).filter(Boolean);
+      if (uniqueIds.length === 0) return 0;
+      const idSet = new Set(uniqueIds);
+      setState((prev) => {
+        const list = prev[stateKey];
+        if (!Array.isArray(list)) return prev;
+        return {
+          ...prev,
+          [stateKey]: (list as unknown as Array<{ id: string }>).filter((item) => !idSet.has(item.id)),
+        };
+      });
+      if (authMode === 'firebase') {
+        await deleteFirestoreDocsInChunks(
+          uniqueIds.map((id) => ({ col: firestoreCol, id })),
+          10
+        );
+      }
+      await ensureSeedLockedInFirebase();
+      await recordAudit(auditModule, `Hapus Massal ${label}`, 'bulk_delete', `${uniqueIds.length} ${label}`);
+      toast.success(`${uniqueIds.length} ${label} dihapus permanen.`);
+      return uniqueIds.length;
+    },
+    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit]
+  );
+
+  const bulkDeletePurchaseOrders = useCallback(
+    async (poIds: string[]): Promise<number> => {
+      if (!currentUser || !hasPermission(currentUser.role, 'master:users')) {
+        toast.error('Hanya Direktur yang dapat menghapus massal Purchase Order.');
+        return 0;
+      }
+      const uniqueIds = Array.from(new Set(poIds)).filter((id) =>
+        state.purchaseOrders.some((p) => p.id === id)
+      );
+      if (uniqueIds.length === 0) return 0;
+      const idSet = new Set(uniqueIds);
+      setState((prev) => ({
+        ...prev,
+        purchaseOrders: prev.purchaseOrders.filter((p) => !idSet.has(p.id)),
+      }));
+      if (authMode === 'firebase') {
+        await deletePurchaseOrdersWithLogs(uniqueIds);
+      }
+      await ensureSeedLockedInFirebase();
+      await recordAudit('Procurement', 'Hapus Massal Purchase Order', 'bulk_po', `${uniqueIds.length} PO`);
+      toast.success(`${uniqueIds.length} Purchase Order dihapus permanen.`);
+      return uniqueIds.length;
+    },
+    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state.purchaseOrders]
+  );
+
+  const bulkApprovePurchaseOrders = useCallback(
+    async (poIds: string[]): Promise<number> => {
+      if (!currentUser || !hasPermission(currentUser.role, 'po:approve')) {
+        toast.error('Hanya Manager atau Direktur yang dapat menyetujui PO secara massal.');
+        return 0;
+      }
+      const uniqueIds = Array.from(new Set(poIds));
+      let approvedCount = 0;
+      let skippedCount = 0;
+      const now = new Date().toISOString();
+      const updatedMap = new Map<string, PurchaseOrder>();
+
+      for (const poId of uniqueIds) {
+        const po = state.purchaseOrders.find((p) => p.id === poId);
+        if (!po || !canTransitionPoStatus(po.status, 'Approved by Manager')) {
+          skippedCount += 1;
+          continue;
+        }
+        const poTotalIdr = convertToIdr(
+          po.totalAmount,
+          po.currency,
+          po.exchangeRate || state.settings.defaultExchangeRateUsdIdr
+        );
+        const needsDirector =
+          po.approvalTierRequired === 'Direktur' ||
+          requiresDirectorApproval(
+            poTotalIdr,
+            state.settings.managerApprovalLimitIdr ?? DEFAULT_MANAGER_APPROVAL_LIMIT_IDR
+          );
+        if (needsDirector && !hasPermission(currentUser.role, 'director:approve')) {
+          skippedCount += 1;
+          continue;
+        }
+        const supplier = state.suppliers.find((s) => s.id === po.supplierId);
+        if (supplier) {
+          const supCheck = validateSupplierForPurchaseOrder({ supplier, totalAmountIdr: poTotalIdr });
+          if (!supCheck.allowed) {
+            skippedCount += 1;
+            continue;
+          }
+        }
+        const logEntry = {
+          id: makeId('log'),
+          action: needsDirector
+            ? 'Disetujui Massal Direktur (Tier High-Value)'
+            : 'Disetujui Massal ke Approved by Manager',
+          actorId: currentUser.uid,
+          actorName: currentUser.displayName,
+          timestamp: now,
+        };
+        const approvedBy = currentUser.uid;
+        const directorApprovedBy = needsDirector ? currentUser.uid : po.directorApprovedBy;
+        updatedMap.set(poId, {
+          ...po,
+          status: 'Approved by Manager',
+          approvedBy,
+          ...(directorApprovedBy ? { directorApprovedBy } : {}),
+          updatedAt: now,
+          logs: [...(po.logs || []), logEntry],
+        });
+        if (authMode === 'firebase') {
+          await saveFirestoreDoc(
+            'purchaseOrders',
+            poId,
+            {
+              status: 'Approved by Manager',
+              approvedBy,
+              ...(directorApprovedBy ? { directorApprovedBy } : {}),
+            },
+            false
+          );
+          await appendPoLog(poId, logEntry);
+        }
+        approvedCount += 1;
+      }
+
+      if (updatedMap.size > 0) {
+        setState((prev) => ({
+          ...prev,
+          purchaseOrders: prev.purchaseOrders.map((p) => updatedMap.get(p.id) || p),
+        }));
+        await recordAudit('Procurement', 'Approve Massal PO', 'bulk_approve_po', `${approvedCount} PO`);
+      }
+
+      if (approvedCount > 0) {
+        toast.success(
+          skippedCount > 0
+            ? `${approvedCount} PO disetujui. ${skippedCount} PO dilewati karena status/otoritas tidak memenuhi syarat.`
+            : `${approvedCount} Purchase Order berhasil disetujui.`
+        );
+      } else {
+        toast.info('Tidak ada PO terpilih yang memenuhi syarat persetujuan.');
+      }
+      return approvedCount;
+    },
+    [authMode, currentUser, recordAudit, state.purchaseOrders, state.settings.defaultExchangeRateUsdIdr, state.settings.managerApprovalLimitIdr, state.suppliers]
+  );
+
+  const bulkDeleteSalesOrders = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('salesOrders', 'salesOrders', ids, 'Sales', 'Sales Order'),
+    [bulkDeleteFlatCollection]
+  );
+
+  const bulkConfirmSalesOrders = useCallback(
+    async (soIds: string[]): Promise<number> => {
+      if (!currentUser || !hasPermission(currentUser.role, 'so:create')) {
+        toast.error('Role Anda tidak memiliki izin mengonfirmasi Sales Order.');
+        return 0;
+      }
+      let confirmedCount = 0;
+      let skippedCount = 0;
+      for (const soId of Array.from(new Set(soIds))) {
+        const so = state.salesOrders.find((s) => s.id === soId);
+        if (!so || so.status !== 'Draft') {
+          skippedCount += 1;
+          continue;
+        }
+        await transitionSalesOrder(soId, 'Confirmed');
+        confirmedCount += 1;
+      }
+      if (confirmedCount === 0 && skippedCount > 0) {
+        toast.info('Hanya Sales Order berstatus Draft yang dapat dikonfirmasi massal.');
+      }
+      return confirmedCount;
+    },
+    [currentUser, state.salesOrders, transitionSalesOrder]
+  );
+
+  const bulkDeleteQuotations = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('salesQuotations', 'salesQuotations', ids, 'Sales Order', 'Sales Quotation'),
+    [bulkDeleteFlatCollection]
+  );
+
+  const bulkUpdateQuotationStatuses = useCallback(
+    async (ids: string[], status: QuotationStatus): Promise<number> => {
+      if (!currentUser || !hasPermission(currentUser.role, 'so:create')) {
+        toast.error('Akses ditolak untuk memperbarui status Quotation.');
+        return 0;
+      }
+      const uniqueIds = Array.from(new Set(ids));
+      const now = new Date().toISOString();
+      const updatedIds = new Set<string>();
+      for (const qId of uniqueIds) {
+        const q = state.salesQuotations.find((x) => x.id === qId);
+        if (!q || q.status === 'Converted' || q.status === status) continue;
+        updatedIds.add(qId);
+        if (authMode === 'firebase') {
+          await saveFirestoreDoc('salesQuotations', qId, { status }, false);
+        }
+      }
+      if (updatedIds.size === 0) {
+        toast.info('Tidak ada Quotation non-Converted yang diperbarui.');
+        return 0;
+      }
+      setState((prev) => ({
+        ...prev,
+        salesQuotations: prev.salesQuotations.map((q) =>
+          updatedIds.has(q.id) ? { ...q, status, updatedAt: now } : q
+        ),
+      }));
+      await recordAudit('Sales Order', `Update Massal Quotation -> ${status}`, 'bulk_qt', `${updatedIds.size} quotation`);
+      toast.success(`${updatedIds.size} Quotation diperbarui ke ${status}.`);
+      return updatedIds.size;
+    },
+    [authMode, currentUser, recordAudit, state.salesQuotations]
+  );
+
+  const bulkDeleteGoodsReturns = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('goodsReturns', 'goodsReturns', ids, 'Inventory', 'Riwayat Retur'),
+    [bulkDeleteFlatCollection]
+  );
+
+  const bulkCompleteGoodsReturns = useCallback(
+    async (ids: string[]): Promise<number> => {
+      if (!currentUser || !hasPermission(currentUser.role, 'return:write')) {
+        toast.error('Role Anda tidak memiliki izin memproses retur.');
+        return 0;
+      }
+      let done = 0;
+      for (const retId of Array.from(new Set(ids))) {
+        const ret = state.goodsReturns.find((r) => r.id === retId);
+        if (!ret || ret.status !== 'Pending') continue;
+        const ok = await completeGoodsReturn(retId);
+        if (ok) done += 1;
+      }
+      if (done === 0) {
+        toast.info('Tidak ada retur berstatus Pending yang dapat diselesaikan.');
+      }
+      return done;
+    },
+    [completeGoodsReturn, currentUser, state.goodsReturns]
+  );
+
+  const bulkCancelGoodsReturns = useCallback(
+    async (ids: string[]): Promise<number> => {
+      if (!currentUser || !hasPermission(currentUser.role, 'return:write')) {
+        toast.error('Akses ditolak.');
+        return 0;
+      }
+      const uniqueIds = Array.from(new Set(ids));
+      const now = new Date().toISOString();
+      const updated = new Set<string>();
+      for (const retId of uniqueIds) {
+        const ret = state.goodsReturns.find((r) => r.id === retId);
+        if (!ret || ret.status !== 'Pending') continue;
+        updated.add(retId);
+        if (authMode === 'firebase') {
+          await saveFirestoreDoc('goodsReturns', retId, { status: 'Cancelled' }, false);
+        }
+      }
+      if (updated.size === 0) {
+        toast.info('Hanya retur berstatus Pending yang dapat dibatalkan.');
+        return 0;
+      }
+      setState((prev) => ({
+        ...prev,
+        goodsReturns: prev.goodsReturns.map((r) =>
+          updated.has(r.id) ? { ...r, status: 'Cancelled', updatedAt: now } : r
+        ),
+      }));
+      await recordAudit('Inventory', 'Batalkan Massal Retur', 'bulk_cancel_ret', `${updated.size} retur`);
+      toast.info(`${updated.size} retur dibatalkan.`);
+      return updated.size;
+    },
+    [authMode, currentUser, recordAudit, state.goodsReturns]
+  );
+
+  const bulkDeleteVendorRfqs = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('vendorRfqs', 'vendorRfqs', ids, 'Purchase Order', 'Vendor RFQ'),
+    [bulkDeleteFlatCollection]
+  );
+
+  const bulkDeleteProducts = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('products', 'products', ids, 'Master Data', 'Produk'),
+    [bulkDeleteFlatCollection]
+  );
+
+  const bulkDeleteSuppliers = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('suppliers', 'suppliers', ids, 'Master Data', 'Supplier'),
+    [bulkDeleteFlatCollection]
+  );
+
+  const bulkVerifySuppliers = useCallback(
+    async (ids: string[], status: PartnerVerificationStatus): Promise<number> => {
+      if (!currentUser || !hasPermission(currentUser.role, 'partner:approve')) {
+        toast.error('Hanya Admin (Direktur) yang berhak memverifikasi supplier secara massal.');
+        return 0;
+      }
+      const uniqueIds = Array.from(new Set(ids));
+      const now = new Date().toISOString();
+      const active = status !== 'Blacklisted';
+      const updated = new Set<string>();
+      for (const sId of uniqueIds) {
+        const target = state.suppliers.find((s) => s.id === sId);
+        if (!target) continue;
+        updated.add(sId);
+        if (authMode === 'firebase') {
+          await saveFirestoreDoc(
+            'suppliers',
+            sId,
+            { verificationStatus: status, verifiedBy: currentUser.uid, verifiedAt: now, active },
+            false
+          );
+        }
+      }
+      if (updated.size === 0) return 0;
+      setState((prev) => ({
+        ...prev,
+        suppliers: prev.suppliers.map((s) =>
+          updated.has(s.id)
+            ? { ...s, verificationStatus: status, verifiedBy: currentUser.uid, verifiedAt: now, active, updatedAt: now }
+            : s
+        ),
+      }));
+      await recordAudit('Master Data', `Verifikasi Massal Supplier -> ${status}`, 'bulk_sup_verify', `${updated.size} supplier`);
+      toast.success(`${updated.size} supplier diperbarui menjadi ${status}.`);
+      return updated.size;
+    },
+    [authMode, currentUser, recordAudit, state.suppliers]
+  );
+
+  const bulkDeleteCustomers = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('customers', 'customers', ids, 'Master Data', 'Buyer / Customer'),
+    [bulkDeleteFlatCollection]
+  );
+
+  const bulkDeleteUsers = useCallback(
+    async (uids: string[]): Promise<number> => {
+      if (!currentUser || !hasPermission(currentUser.role, 'master:users')) {
+        toast.error('Hanya Direktur yang dapat menghapus pengguna.');
+        return 0;
+      }
+      const deletable = Array.from(new Set(uids)).filter((uid) => uid && uid !== currentUser.uid);
+      if (deletable.length === 0) {
+        toast.error('Tidak ada akun selain akun aktif yang dipilih.');
+        return 0;
+      }
+      const idSet = new Set(deletable);
+      setState((prev) => ({
+        ...prev,
+        users: prev.users.filter((u) => !idSet.has(u.uid)),
+      }));
+      if (authMode === 'firebase') {
+        await deleteFirestoreDocsInChunks(
+          deletable.map((id) => ({ col: 'users', id })),
+          10
+        );
+      }
+      await recordAudit('System', 'Hapus Massal User', 'bulk_users', `${deletable.length} user`);
+      toast.success(`${deletable.length} user dihapus.`);
+      return deletable.length;
+    },
+    [authMode, currentUser, recordAudit]
+  );
+
+  const bulkDeleteStockMovements = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('stockMovements', 'stockMovements', ids, 'Inventory', 'Riwayat Mutasi Stok'),
+    [bulkDeleteFlatCollection]
+  );
+
+  const bulkDeleteInventoryBatches = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('inventoryBatches', 'inventoryBatches', ids, 'Inventory', 'Batch / Serial'),
+    [bulkDeleteFlatCollection]
+  );
+
+  const bulkDeleteChartAccounts = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('chartOfAccounts', 'chartOfAccounts', ids, 'Accounting', 'Akun CoA'),
+    [bulkDeleteFlatCollection]
+  );
+
+  const bulkVoidJournalEntries = useCallback(
+    async (entryIds: string[]): Promise<number> => {
+      if (!currentUser || !hasPermission(currentUser.role, 'accounting:write')) {
+        toast.error('Role Anda tidak memiliki izin mem-Void jurnal.');
+        return 0;
+      }
+      const now = new Date().toISOString();
+      const updatedIds = new Set<string>();
+      let lockedSkipped = 0;
+
+      for (const entryId of Array.from(new Set(entryIds))) {
+        const target = state.journalEntries.find((j) => j.id === entryId);
+        if (!target || target.status === 'Void') continue;
+        const lockCheck = isDateInClosedPeriod(target.entryDate, state.periodClosings);
+        if (lockCheck.locked) {
+          lockedSkipped += 1;
+          continue;
+        }
+        updatedIds.add(entryId);
+        if (authMode === 'firebase') {
+          await saveFirestoreDoc('journalEntries', entryId, { status: 'Void' }, false);
+        }
+      }
+
+      if (updatedIds.size > 0) {
+        setState((prev) => ({
+          ...prev,
+          journalEntries: prev.journalEntries.map((j) =>
+            updatedIds.has(j.id) ? { ...j, status: 'Void', updatedAt: now } : j
+          ),
+        }));
+        await recordAudit('Accounting', 'Void Massal Jurnal', 'bulk_void_jrn', `${updatedIds.size} jurnal`);
+        toast.success(
+          lockedSkipped > 0
+            ? `${updatedIds.size} jurnal di-Void. ${lockedSkipped} jurnal periode tertutup dilewati.`
+            : `${updatedIds.size} jurnal berhasil dibatalkan (Void).`
+        );
+      } else {
+        toast.info(
+          lockedSkipped > 0
+            ? 'Semua jurnal terpilih berada di periode akuntansi tertutup.'
+            : 'Tidak ada jurnal berstatus Posted yang dipilih.'
+        );
+      }
+      return updatedIds.size;
+    },
+    [authMode, currentUser, recordAudit, state.journalEntries, state.periodClosings]
+  );
+
+  const bulkDeleteJournalEntries = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('journalEntries', 'journalEntries', ids, 'Accounting', 'Jurnal Akuntansi'),
+    [bulkDeleteFlatCollection]
+  );
+
+  const bulkDeleteInvoices = useCallback(
+    async (invoiceIds: string[]): Promise<number> => {
+      if (!currentUser || !hasPermission(currentUser.role, 'master:users')) {
+        toast.error('Hanya Direktur yang dapat menghapus massal Invoice AP/AR.');
+        return 0;
+      }
+      const uniqueIds = Array.from(new Set(invoiceIds)).filter((id) =>
+        state.invoices.some((i) => i.id === id)
+      );
+      if (uniqueIds.length === 0) return 0;
+      const idSet = new Set(uniqueIds);
+      setState((prev) => ({
+        ...prev,
+        invoices: prev.invoices.filter((i) => !idSet.has(i.id)),
+      }));
+      if (authMode === 'firebase') {
+        await deleteInvoicesWithPayments(uniqueIds);
+      }
+      await recordAudit('Accounting', 'Hapus Massal Invoice AP/AR', 'bulk_inv', `${uniqueIds.length} invoice`);
+      toast.success(`${uniqueIds.length} Invoice dihapus permanen.`);
+      return uniqueIds.length;
+    },
+    [authMode, currentUser, recordAudit, state.invoices]
+  );
+
+  const bulkMarkNotificationsRead = useCallback(
+    async (notifIds: string[]): Promise<number> => {
+      if (!currentUser) return 0;
+      const targetIds = new Set(notifIds);
+      const toMark = state.notifications.filter(
+        (n) => targetIds.has(n.id) && !(n.readBy || []).includes(currentUser.uid)
+      );
+      if (toMark.length === 0) {
+        toast.info('Notifikasi terpilih sudah berstatus dibaca.');
+        return 0;
+      }
+      const updatedReadMap = new Map<string, string[]>();
+      for (const n of toMark) {
+        const readBy = Array.from(new Set([...(n.readBy || []), currentUser.uid]));
+        updatedReadMap.set(n.id, readBy);
+        if (authMode === 'firebase') {
+          await markNotificationReadInFirestore(n.id, readBy);
+        }
+      }
+      setState((prev) => ({
+        ...prev,
+        notifications: prev.notifications.map((n) =>
+          updatedReadMap.has(n.id) ? { ...n, readBy: updatedReadMap.get(n.id)! } : n
+        ),
+      }));
+      toast.success(`${toMark.length} notifikasi ditandai sudah dibaca.`);
+      return toMark.length;
+    },
+    [authMode, currentUser, state.notifications]
+  );
+
+  const bulkDeleteNotifications = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('notifications', 'notifications', ids, 'System', 'Notifikasi'),
+    [bulkDeleteFlatCollection]
+  );
+
+  const bulkDeleteAuditLogs = useCallback(
+    (ids: string[]) => bulkDeleteFlatCollection('auditLogs', 'auditLogs', ids, 'System', 'Audit Log'),
+    [bulkDeleteFlatCollection]
+  );
+
   const resetTotalDatabase = useCallback(async (): Promise<boolean> => {
     if (!currentUser || !hasPermission(currentUser.role, 'master:users')) {
       toast.error('Hanya Direktur yang berhak mengosongkan seluruh database.');
@@ -5021,6 +5537,30 @@ export function useErpController() {
     updateInvoiceTaxNumber,
     deleteAuditLog,
     deleteNotification,
+    bulkDeletePurchaseOrders,
+    bulkApprovePurchaseOrders,
+    bulkDeleteSalesOrders,
+    bulkConfirmSalesOrders,
+    bulkDeleteQuotations,
+    bulkUpdateQuotationStatuses,
+    bulkDeleteGoodsReturns,
+    bulkCompleteGoodsReturns,
+    bulkCancelGoodsReturns,
+    bulkDeleteVendorRfqs,
+    bulkDeleteProducts,
+    bulkDeleteSuppliers,
+    bulkVerifySuppliers,
+    bulkDeleteCustomers,
+    bulkDeleteUsers,
+    bulkDeleteStockMovements,
+    bulkDeleteInventoryBatches,
+    bulkDeleteChartAccounts,
+    bulkVoidJournalEntries,
+    bulkDeleteJournalEntries,
+    bulkDeleteInvoices,
+    bulkMarkNotificationsRead,
+    bulkDeleteNotifications,
+    bulkDeleteAuditLogs,
     resetTotalDatabase,
   };
 }

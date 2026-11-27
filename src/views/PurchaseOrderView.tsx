@@ -3,7 +3,6 @@ import {
   Award,
   CheckCircle2,
   Download,
-  FileDown,
   GitCompare,
   PackageCheck,
   Plus,
@@ -14,7 +13,9 @@ import {
   Upload,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { usePrintDocument } from '../components/PrintableDocumentModal';
+import { BulkActionBar, SelectCheckbox } from '../components/ui/BulkActions';
 import {
   Button,
   Card,
@@ -39,6 +40,7 @@ import {
   Textarea,
 } from '../components/ui/primitives';
 import type { ErpController } from '../controllers/useErpController';
+import { useBulkSelection } from '../hooks/useBulkSelection';
 import { useI18n } from '../lib/i18n';
 import {
   calculateOrderTotals,
@@ -65,7 +67,11 @@ import type {
   PurchaseOrder,
   VendorRfq,
 } from '../models/types';
-import { exportPurchaseOrderCsv, exportPurchaseOrderPdf } from '../services/exportService';
+import {
+  exportPurchaseOrderCsv,
+  exportPurchaseOrderPdf,
+  exportTableToCsv,
+} from '../services/exportService';
 
 function getPoStatusTone(status: PoStatus): 'neutral' | 'success' | 'warning' | 'danger' | 'info' {
   switch (status) {
@@ -233,6 +239,83 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
       ),
     [state.purchaseOrders]
   );
+
+  const poIds = useMemo(() => filteredPos.map((p) => p.id), [filteredPos]);
+  const poSelection = useBulkSelection(poIds);
+  const rfqIds = useMemo(() => state.vendorRfqs.map((r) => r.id), [state.vendorRfqs]);
+  const rfqSelection = useBulkSelection(rfqIds);
+  const returnIds = useMemo(() => purchaseReturns.map((r) => r.id), [purchaseReturns]);
+  const returnSelection = useBulkSelection(returnIds);
+
+  const selectedPos = useMemo(() => poSelection.pickSelected(filteredPos), [filteredPos, poSelection]);
+  const selectedSubmittedPoIds = useMemo(
+    () => selectedPos.filter((p) => p.status === 'Submitted').map((p) => p.id),
+    [selectedPos]
+  );
+  const selectedReturns = useMemo(
+    () => returnSelection.pickSelected(purchaseReturns),
+    [purchaseReturns, returnSelection]
+  );
+  const selectedPendingReturnIds = useMemo(
+    () => selectedReturns.filter((r) => r.status === 'Pending').map((r) => r.id),
+    [selectedReturns]
+  );
+
+  const exportSelectedPos = () => {
+    if (selectedPos.length === 0) return;
+    exportTableToCsv(
+      `Purchase_Orders_Terpilih_${new Date().toISOString().slice(0, 10)}`,
+      ['No. PO', 'Supplier', 'Gudang', 'Target Kirim', 'Mata Uang', 'Total', 'Status'],
+      selectedPos.map((p) => [
+        p.poNumber || '-',
+        p.supplierName || '-',
+        p.warehouseName || '-',
+        p.expectedDate || '-',
+        p.currency || 'IDR',
+        p.totalAmount ?? 0,
+        p.status || '-',
+      ])
+    );
+    toast.success(`${selectedPos.length} Purchase Order diekspor ke CSV.`);
+  };
+
+  const exportSelectedRfqs = () => {
+    const picked = rfqSelection.pickSelected(state.vendorRfqs);
+    if (picked.length === 0) return;
+    exportTableToCsv(
+      `Vendor_RFQ_Terpilih_${new Date().toISOString().slice(0, 10)}`,
+      ['No. RFQ', 'Judul', 'Gudang', 'Deadline', 'Penawaran Masuk', 'Status', 'PO Terbit'],
+      picked.map((r) => [
+        r.rfqNumber,
+        r.title,
+        r.warehouseName || r.warehouseId,
+        r.deadlineDate,
+        r.quotes.length,
+        r.status,
+        r.awardedPoNumber || '-',
+      ])
+    );
+    toast.success(`${picked.length} Vendor RFQ diekspor ke CSV.`);
+  };
+
+  const exportSelectedReturns = () => {
+    if (selectedReturns.length === 0) return;
+    exportTableToCsv(
+      `Retur_Pembelian_Terpilih_${new Date().toISOString().slice(0, 10)}`,
+      ['No. Retur', 'Ref PO', 'Supplier', 'Tanggal', 'Alasan', 'Mata Uang', 'Total', 'Status'],
+      selectedReturns.map((r) => [
+        r.returnNumber,
+        r.referenceOrderNumber,
+        r.counterpartyName,
+        r.returnDate,
+        r.reason,
+        r.currency,
+        r.totalAmount,
+        r.status,
+      ])
+    );
+    toast.success(`${selectedReturns.length} Retur Pembelian diekspor ke CSV.`);
+  };
 
   const companyIsPkp = isCompanyPkp(state.settings);
   const effectiveTaxRate = getEffectiveTaxRatePercent(state.settings);
@@ -440,8 +523,67 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
             ))}
           </div>
 
+          {filteredPos.length > 0 && (
+            <div className="flex items-center justify-between gap-2 md:hidden px-1">
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={poSelection.allVisibleSelected}
+                  indeterminate={poSelection.someVisibleSelected}
+                  onChange={poSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua Purchase Order"
+                />
+                <span>Pilih Semua ({filteredPos.length})</span>
+              </label>
+            </div>
+          )}
+
+          <BulkActionBar
+            selectedCount={poSelection.selectedCount}
+            itemLabel="Purchase Order"
+            onClear={poSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-po-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: exportSelectedPos,
+              },
+              ...(canApprove && selectedSubmittedPoIds.length > 0
+                ? [
+                    {
+                      id: 'approve-po-bulk',
+                      label: `Setujui PO (${selectedSubmittedPoIds.length})`,
+                      icon: <CheckCircle2 className="h-3.5 w-3.5" />,
+                      variant: 'accent' as const,
+                      onClick: async () => {
+                        await erp.bulkApprovePurchaseOrders(selectedSubmittedPoIds);
+                        poSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+              ...(canDelete
+                ? [
+                    {
+                      id: 'delete-po-bulk',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: `Konfirmasi Hapus (${poSelection.selectedCount})`,
+                      onClick: async () => {
+                        await erp.bulkDeletePurchaseOrders(Array.from(poSelection.selectedIds));
+                        poSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
           {/* Mobile PO Cards */}
-          <div className="space-y-3 md:hidden">
+          <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {filteredPos.length === 0 ? (
               <Card>
                 <CardContent className="py-8 text-center text-xs text-slate-500">
@@ -455,16 +597,27 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                 const tier =
                   po.approvalTierRequired ||
                   (requiresDirectorApproval(poIdr, managerLimitIdr) ? 'Direktur' : 'Manager');
+                const canRecvPo =
+                  canReceive &&
+                  ['Approved by Manager', 'Ordered', 'Partially Received'].includes(po.status);
                 return (
-                  <Card key={`m_po_${po.id}`}>
+                  <Card key={`m_po_${po.id}`} className={poSelection.isSelected(po.id) ? 'border-[#1B5E99] bg-[#F4F8FC]' : ''}>
                     <CardContent className="p-4 space-y-3 text-xs">
                       <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="font-mono font-bold text-[#0B1B3A] text-sm">
-                            {po.poNumber}
-                          </div>
-                          <div className="text-[11px] text-slate-500">
-                            {po.items.length} item · Target {po.expectedDate || '-'} · Tier {tier}
+                        <div className="flex items-start gap-2 min-w-0">
+                          <SelectCheckbox
+                            checked={poSelection.isSelected(po.id)}
+                            onChange={() => poSelection.toggleOne(po.id)}
+                            ariaLabel={`Pilih PO ${po.poNumber}`}
+                            className="mt-0.5"
+                          />
+                          <div className="min-w-0">
+                            <div className="font-mono font-bold text-[#0B1B3A] text-sm">
+                              {po.poNumber}
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              {po.items.length} item · Target {po.expectedDate || '-'} · Tier {tier}
+                            </div>
                           </div>
                         </div>
                         <div className="flex flex-col items-end gap-1">
@@ -485,17 +638,17 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                         </span>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2 pt-1">
+                      <div className={canRecvPo ? 'grid grid-cols-2 gap-2 pt-1' : 'pt-1'}>
                         <Button
                           type="button"
                           variant="outline"
                           size="sm"
+                          className={canRecvPo ? '' : 'w-full'}
                           onClick={() => openPoDetail(po, false)}
                         >
                           Detail PO
                         </Button>
-                        {canReceive &&
-                        ['Approved by Manager', 'Ordered', 'Partially Received'].includes(po.status) ? (
+                        {canRecvPo && (
                           <Button
                             type="button"
                             variant="accent"
@@ -505,22 +658,6 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                             <PackageCheck className="h-3.5 w-3.5" />
                             Terima Barang
                           </Button>
-                        ) : (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() =>
-                              void exportPurchaseOrderPdf(
-                                po,
-                                state.settings,
-                                state.suppliers.find((s) => s.id === po.supplierId)
-                              )
-                            }
-                          >
-                            <FileDown className="h-3.5 w-3.5 text-[#1B5E99]" />
-                            PDF PO
-                          </Button>
                         )}
                       </div>
 
@@ -528,9 +665,9 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                         <div className="flex items-center gap-1.5">
                           <Button
                             type="button"
-                            variant="ghost"
+                            variant="outline"
                             size="sm"
-                            aria-label={`Cetak PO ${po.poNumber}`}
+                            aria-label={`Cetak Preview PO ${po.poNumber}`}
                             onClick={() => {
                               const sup = state.suppliers.find((s) => s.id === po.supplierId);
                               openPrintPreview(
@@ -540,22 +677,7 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                             }}
                           >
                             <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                            Cetak
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() =>
-                              void exportPurchaseOrderPdf(
-                                po,
-                                state.settings,
-                                state.suppliers.find((s) => s.id === po.supplierId)
-                              )
-                            }
-                          >
-                            <FileDown className="h-3.5 w-3.5 text-[#1B5E99]" />
-                            PDF
+                            Cetak Preview
                           </Button>
                           <Button
                             type="button"
@@ -590,10 +712,18 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
 
           {/* Desktop PO Table */}
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200">
                   <tr>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={poSelection.allVisibleSelected}
+                        indeterminate={poSelection.someVisibleSelected}
+                        onChange={poSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua Purchase Order"
+                      />
+                    </th>
                     <th className="py-3 px-4 font-semibold">Nomor PO</th>
                     <th className="py-3 px-3 font-semibold">Supplier</th>
                     <th className="py-3 px-3 font-semibold">Gudang Tujuan</th>
@@ -607,7 +737,7 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                 <tbody className="divide-y divide-slate-100">
                   {filteredPos.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="py-8 text-center text-slate-500">
+                      <td colSpan={9} className="py-8 text-center text-slate-500">
                         Belum ada data Purchase Order.
                       </td>
                     </tr>
@@ -623,7 +753,14 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                         po.approvalTierRequired ||
                         (requiresDirectorApproval(poIdr, managerLimitIdr) ? 'Direktur' : 'Manager');
                       return (
-                        <tr key={po.id} className="hover:bg-slate-50/70">
+                        <tr key={po.id} className={poSelection.isSelected(po.id) ? 'bg-[#F0F6FC]' : 'hover:bg-slate-50/70'}>
+                          <td className="py-3 pl-4 pr-2">
+                            <SelectCheckbox
+                              checked={poSelection.isSelected(po.id)}
+                              onChange={() => poSelection.toggleOne(po.id)}
+                              ariaLabel={`Pilih PO ${po.poNumber}`}
+                            />
+                          </td>
                           <td className="py-3 px-4">
                             <div className="font-mono font-semibold text-slate-900">
                               {po.poNumber}
@@ -651,7 +788,7 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                               type="button"
                               variant="outline"
                               size="sm"
-                              aria-label={`Cetak PO ${po.poNumber}`}
+                              aria-label={`Cetak Preview PO ${po.poNumber}`}
                               onClick={() => {
                                 const sup = state.suppliers.find((s) => s.id === po.supplierId);
                                 openPrintPreview(
@@ -661,23 +798,7 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                               }}
                             >
                               <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                              Cetak
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              aria-label={`Export PDF ${po.poNumber}`}
-                              onClick={() =>
-                                void exportPurchaseOrderPdf(
-                                  po,
-                                  state.settings,
-                                  state.suppliers.find((s) => s.id === po.supplierId)
-                                )
-                              }
-                            >
-                              <FileDown className="h-3.5 w-3.5 text-[#1B5E99]" />
-                              PDF
+                              Cetak Preview
                             </Button>
                             <Button
                               type="button"
@@ -738,6 +859,51 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
         {/* TAB 2: VENDOR RFQ & COMPARISON MATRIX                           */}
         {/* =============================================================== */}
         <TabsContent value="rfq" className="space-y-4">
+          {state.vendorRfqs.length > 0 && (
+            <div className="flex items-center justify-between gap-2 px-1">
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={rfqSelection.allVisibleSelected}
+                  indeterminate={rfqSelection.someVisibleSelected}
+                  onChange={rfqSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua Vendor RFQ"
+                />
+                <span>Pilih Semua RFQ ({state.vendorRfqs.length})</span>
+              </label>
+            </div>
+          )}
+
+          <BulkActionBar
+            selectedCount={rfqSelection.selectedCount}
+            itemLabel="Vendor RFQ"
+            onClear={rfqSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-rfq-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: exportSelectedRfqs,
+              },
+              ...(canDelete
+                ? [
+                    {
+                      id: 'delete-rfq-bulk',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: `Konfirmasi Hapus (${rfqSelection.selectedCount})`,
+                      onClick: async () => {
+                        await erp.bulkDeleteVendorRfqs(Array.from(rfqSelection.selectedIds));
+                        rfqSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
           {state.vendorRfqs.length === 0 ? (
             <Card>
               <CardContent className="py-10 text-center text-xs text-slate-500">
@@ -745,7 +911,7 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
               </CardContent>
             </Card>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-4 max-h-[560px] overflow-y-auto pr-1">
               {state.vendorRfqs.map((rfq) => {
                 const quoteMetrics = rfq.quotes.map((q) => {
                   const totalOrigin = rfq.items.reduce(
@@ -763,10 +929,15 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                     : 0;
 
                 return (
-                  <Card key={rfq.id}>
+                  <Card key={rfq.id} className={rfqSelection.isSelected(rfq.id) ? 'border-[#1B5E99] bg-[#F4F8FC]' : ''}>
                     <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
+                          <SelectCheckbox
+                            checked={rfqSelection.isSelected(rfq.id)}
+                            onChange={() => rfqSelection.toggleOne(rfq.id)}
+                            ariaLabel={`Pilih RFQ ${rfq.rfqNumber}`}
+                          />
                           <span className="font-mono font-bold text-[#0B1B3A]">{rfq.rfqNumber}</span>
                           <StatusLabel
                             status={rfq.status}
@@ -987,8 +1158,80 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
         {/* TAB 3: PURCHASE RETURNS (RETUR PEMBELIAN)                       */}
         {/* =============================================================== */}
         <TabsContent value="returns" className="space-y-4">
+          {purchaseReturns.length > 0 && (
+            <div className="flex items-center justify-between gap-2 md:hidden px-1">
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={returnSelection.allVisibleSelected}
+                  indeterminate={returnSelection.someVisibleSelected}
+                  onChange={returnSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua Retur Pembelian"
+                />
+                <span>Pilih Semua ({purchaseReturns.length})</span>
+              </label>
+            </div>
+          )}
+
+          <BulkActionBar
+            selectedCount={returnSelection.selectedCount}
+            itemLabel="retur pembelian"
+            onClear={returnSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-ret-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: exportSelectedReturns,
+              },
+              ...(canCompleteReturn && selectedPendingReturnIds.length > 0
+                ? [
+                    {
+                      id: 'complete-ret-bulk',
+                      label: `Selesaikan (${selectedPendingReturnIds.length})`,
+                      icon: <CheckCircle2 className="h-3.5 w-3.5" />,
+                      variant: 'accent' as const,
+                      onClick: async () => {
+                        await erp.bulkCompleteGoodsReturns(selectedPendingReturnIds);
+                        returnSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+              ...(canReturn && selectedPendingReturnIds.length > 0
+                ? [
+                    {
+                      id: 'cancel-ret-bulk',
+                      label: `Batalkan (${selectedPendingReturnIds.length})`,
+                      variant: 'outline' as const,
+                      onClick: async () => {
+                        await erp.bulkCancelGoodsReturns(selectedPendingReturnIds);
+                        returnSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+              ...(canDelete
+                ? [
+                    {
+                      id: 'delete-ret-bulk',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: `Konfirmasi Hapus (${returnSelection.selectedCount})`,
+                      onClick: async () => {
+                        await erp.bulkDeleteGoodsReturns(Array.from(returnSelection.selectedIds));
+                        returnSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
           {/* Mobile Purchase Returns Cards */}
-          <div className="space-y-3 md:hidden">
+          <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {purchaseReturns.length === 0 ? (
               <Card>
                 <CardContent className="py-8 text-center text-xs text-slate-500">
@@ -997,13 +1240,21 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
               </Card>
             ) : (
               purchaseReturns.map((ret) => (
-                <Card key={`m_ret_po_${ret.id}`}>
+                <Card key={`m_ret_po_${ret.id}`} className={returnSelection.isSelected(ret.id) ? 'border-[#1B5E99] bg-[#F4F8FC]' : ''}>
                   <CardContent className="p-4 space-y-2.5 text-xs">
                     <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="font-mono font-bold text-[#0B1B3A]">{ret.returnNumber}</div>
-                        <div className="text-[11px] text-slate-500">
-                          Ref PO: {ret.referenceOrderNumber} · {ret.returnDate}
+                      <div className="flex items-start gap-2 min-w-0">
+                        <SelectCheckbox
+                          checked={returnSelection.isSelected(ret.id)}
+                          onChange={() => returnSelection.toggleOne(ret.id)}
+                          ariaLabel={`Pilih retur ${ret.returnNumber}`}
+                          className="mt-0.5"
+                        />
+                        <div className="min-w-0">
+                          <div className="font-mono font-bold text-[#0B1B3A]">{ret.returnNumber}</div>
+                          <div className="text-[11px] text-slate-500">
+                            Ref PO: {ret.referenceOrderNumber} · {ret.returnDate}
+                          </div>
                         </div>
                       </div>
                       <StatusLabel status={ret.status} tone={getReturnTone(ret.status)} />
@@ -1071,10 +1322,18 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
 
           {/* Desktop Purchase Returns Table */}
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200">
                   <tr>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={returnSelection.allVisibleSelected}
+                        indeterminate={returnSelection.someVisibleSelected}
+                        onChange={returnSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua Retur Pembelian"
+                      />
+                    </th>
                     <th className="py-3 px-4 font-semibold">No. Retur</th>
                     <th className="py-3 px-3 font-semibold">Ref. PO</th>
                     <th className="py-3 px-3 font-semibold">Supplier</th>
@@ -1088,13 +1347,20 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                 <tbody className="divide-y divide-slate-100">
                   {purchaseReturns.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="py-8 text-center text-slate-500">
+                      <td colSpan={9} className="py-8 text-center text-slate-500">
                         Belum ada catatan Retur Pembelian.
                       </td>
                     </tr>
                   ) : (
                     purchaseReturns.map((ret) => (
-                      <tr key={ret.id} className="hover:bg-slate-50/70">
+                      <tr key={ret.id} className={returnSelection.isSelected(ret.id) ? 'bg-[#F0F6FC]' : 'hover:bg-slate-50/70'}>
+                        <td className="py-3 pl-4 pr-2">
+                          <SelectCheckbox
+                            checked={returnSelection.isSelected(ret.id)}
+                            onChange={() => returnSelection.toggleOne(ret.id)}
+                            ariaLabel={`Pilih retur ${ret.returnNumber}`}
+                          />
+                        </td>
                         <td className="py-3 px-4 font-mono font-semibold text-[#0B1B3A]">
                           {ret.returnNumber}
                         </td>
@@ -2319,22 +2585,7 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                       }}
                     >
                       <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                      Cetak A4
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        void exportPurchaseOrderPdf(
-                          selectedPo,
-                          state.settings,
-                          state.suppliers.find((s) => s.id === selectedPo.supplierId)
-                        )
-                      }
-                    >
-                      <FileDown className="h-3.5 w-3.5 text-[#1B5E99]" />
-                      PDF PO
+                      Cetak Preview
                     </Button>
                     <Button
                       type="button"

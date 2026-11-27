@@ -20,7 +20,8 @@ export type PrintableDocumentType =
   | 'SURAT_JALAN'
   | 'KWITANSI'
   | 'REG_SUPPLIER'
-  | 'REG_BUYER';
+  | 'REG_BUYER'
+  | 'REPORT';
 
 export interface PrintMetadataRow {
   label: string;
@@ -54,6 +55,7 @@ export interface PrintTableColumn {
 
 export interface PrintableDocumentData {
   docType: PrintableDocumentType;
+  orientation?: 'portrait' | 'landscape';
   documentTitle: string;
   documentNumber: string;
   filenameBase: string;
@@ -750,6 +752,66 @@ export function buildBuyerRegistrationPrintDoc(
       code: regCode,
       detailLine: `Buyer: ${customer.name} (${customer.code}) | Limit: ${formatCurrency(customer.creditLimit || 0, 'IDR')} | Skema: ${customer.paymentScheme || 'CBD'}`,
       payload: `DHI-REG-BUY|${regCode}|${customer.name}|NIB:${customer.nib || '-'}|LIMIT:${customer.creditLimit || 0}|${verifiedDate}`,
+    },
+  };
+}
+
+export interface TableReportPrintInput {
+  documentTitle: string;
+  documentNumber: string;
+  filenameBase: string;
+  subtitle?: string;
+  company: CompanySettings;
+  leftMeta?: PrintMetadataRow[];
+  rightMeta?: PrintMetadataRow[];
+  columns: PrintTableColumn[];
+  rows: string[][];
+  totals?: PrintTotalRow[];
+  notesTitle?: string;
+  notesText?: string;
+  orientation?: 'portrait' | 'landscape';
+  signerLabel?: string;
+  signerName?: string;
+}
+
+export function buildTableReportPrintDoc(input: TableReportPrintInput): PrintableDocumentData {
+  const today = new Date().toISOString().slice(0, 10);
+  const orientation =
+    input.orientation || (input.columns.length >= 6 ? 'landscape' : 'portrait');
+
+  return {
+    docType: 'REPORT',
+    orientation,
+    documentTitle: input.documentTitle,
+    documentNumber: input.documentNumber,
+    filenameBase: input.filenameBase,
+    company: input.company,
+    leftMeta: input.leftMeta || [
+      { label: 'Jenis Laporan', value: input.documentTitle },
+      { label: 'Tanggal Cetak', value: today },
+      { label: 'Total Baris', value: `${input.rows.length} baris` },
+    ],
+    rightMeta: input.rightMeta || [
+      { label: 'Ringkasan', value: input.subtitle || 'Laporan Resmi ERP' },
+      { label: 'Perusahaan', value: input.company.companyName || 'PT Domestiq Hub Indonesia' },
+      { label: 'NPWP', value: input.company.npwp || '-' },
+    ],
+    columns: input.columns,
+    rows: input.rows.length > 0 ? input.rows : [input.columns.map((_, i) => (i === 0 ? 'Tidak ada data pada periode/filter ini.' : '-'))],
+    notesTitle: input.notesTitle,
+    notesText: input.notesText,
+    totals: input.totals,
+    signatures: [
+      {
+        roleLabel: input.signerLabel || 'Disusun / Diverifikasi Oleh,',
+        signerName: input.signerName || input.company.companyName || 'Finance & Management',
+      },
+    ],
+    qrVerification: {
+      title: 'VERIFIKASI DIGITAL LAPORAN RESMI ERP',
+      code: input.documentNumber,
+      detailLine: `${input.documentTitle} | ${input.subtitle || today} | ${input.rows.length} baris`,
+      payload: `DHI-RPT|${input.documentNumber}|${input.documentTitle}|${today}|ROWS:${input.rows.length}`,
     },
   };
 }

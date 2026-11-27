@@ -7,18 +7,19 @@ import {
   ClipboardList,
   Copy,
   CreditCard,
-  FileDown,
   Landmark,
   Mail,
   MessageSquare,
   MonitorPlay,
   Plus,
+  Printer,
   ShoppingCart,
   Target,
   TrendingUp,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { usePrintDocument } from '../components/PrintableDocumentModal';
 import {
   Button,
   Card,
@@ -53,6 +54,7 @@ import {
   type AgingBucket,
   type ExecutivePeriodFilter,
 } from '../models/erpLogic';
+import { buildTableReportPrintDoc } from '../models/printDocumentModel';
 import { canAccessModule, hasPermission } from '../models/rbac';
 import type { AppModule } from '../models/types';
 import { exportExecutiveBoardPdf } from '../services/exportService';
@@ -68,6 +70,7 @@ const AGING_BUCKETS: AgingBucket[] = [
 export function DashboardView({ erp }: { erp: ErpController }) {
   const { state, currentUser, setActiveModule } = erp;
   const { lang, tr } = useI18n();
+  const { openPrintPreview } = usePrintDocument();
   const rate = state.settings.defaultExchangeRateUsdIdr || 16250;
 
   const [period, setPeriod] = useState<ExecutivePeriodFilter>('all');
@@ -393,8 +396,8 @@ export function DashboardView({ erp }: { erp: ErpController }) {
     return groups;
   }, [state.salesOrders, tr]);
 
-  const handleExportBriefing = () => {
-    exportExecutiveBoardPdf({
+  const handleOpenBriefingPreview = () => {
+    const briefingParams = {
       lang,
       company: state.settings,
       periodLabel,
@@ -416,7 +419,56 @@ export function DashboardView({ erp }: { erp: ErpController }) {
         monthLabel: formatMonthKeyLabel(m.monthKey, lang),
       })),
       topCustomers: contributions.topCustomers,
-    });
+    };
+
+    const rows: string[][] = [
+      [tr('Pendapatan Usaha (Revenue)', 'Operating Revenue'), formatCurrency(incomeStatement.totalRevenueIdr), `${grossMarginPct.toFixed(1)}% Gross Margin`],
+      [tr('Laba Kotor (Gross Profit)', 'Gross Profit'), formatCurrency(incomeStatement.grossProfitIdr), tr('HPP / COGS: ', 'COGS: ') + formatCurrency(incomeStatement.totalCogsIdr)],
+      [tr('Laba Bersih (Net Income)', 'Net Income'), formatCurrency(incomeStatement.netIncomeIdr), `${netMarginPct.toFixed(1)}% Net Margin`],
+      [tr('Total Aset / Ekuitas', 'Total Assets / Equity'), formatCurrency(balanceSheet.totalAssetsIdr), `${tr('Ekuitas', 'Equity')}: ${formatCurrency(balanceSheet.totalEquityIdr)}`],
+      [tr('Kas & Bank / Nilai Stok', 'Cash & Bank / Inventory'), formatCurrency(cashAndBankIdr), `${tr('Stok', 'Stock')}: ${formatCurrency(totalStockValueIdr)}`],
+      [tr('Piutang (AR) / Hutang (AP)', 'AR / AP Position'), formatCurrency(totalArIdr), `AP: ${formatCurrency(totalApIdr)}`],
+      [tr('Modal Kerja Bersih', 'Net Working Capital'), formatCurrency(netWorkingCapitalIdr), tr('Likuiditas Jangka Pendek', 'Short-Term Liquidity')],
+      ...contributions.topCustomers.slice(0, 5).map((c, idx) => [
+        `${tr('Top Customer', 'Top Customer')} #${idx + 1}: ${c.name}`,
+        formatCurrency(c.amountIdr),
+        `${c.count} SO (${c.sharePercent.toFixed(1)}%)`,
+      ]),
+    ];
+
+    openPrintPreview(
+      buildTableReportPrintDoc({
+        documentTitle: tr('BRIEFING EKSEKUTIF & PEMEGANG SAHAM', 'EXECUTIVE & SHAREHOLDER BRIEFING'),
+        documentNumber: `EXEC-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`,
+        filenameBase: 'Executive_Board_Briefing',
+        subtitle: periodLabel,
+        company: state.settings,
+        orientation: 'portrait',
+        leftMeta: [
+          { label: tr('Periode Analisis', 'Analysis Period'), value: periodLabel },
+          { label: tr('Status Neraca', 'Balance Sheet'), value: balanceSheet.isBalanced ? tr('Seimbang (Terverifikasi)', 'Balanced') : tr('Perlu Review', 'Review Needed') },
+          { label: tr('Kurs Referensi', 'FX Reference'), value: `1 USD = ${formatCurrency(rate)}` },
+        ],
+        rightMeta: [
+          { label: tr('Perusahaan', 'Company'), value: state.settings.companyName || 'PT Domestiq Hub Indonesia' },
+          { label: tr('Disusun Untuk', 'Prepared For'), value: currentUser?.displayName || 'Board & Shareholders' },
+          { label: 'Role', value: currentUser?.role || 'Direktur' },
+        ],
+        columns: [
+          { header: tr('Indikator / Kontributor Utama', 'Key Metric / Top Contributor'), align: 'left', bold: true },
+          { header: tr('Nilai (IDR)', 'Amount (IDR)'), align: 'right', mono: true },
+          { header: tr('Keterangan / Rasio', 'Notes / Ratio'), align: 'left' },
+        ],
+        rows,
+        notesTitle: tr('Ringkasan Narasi Eksekutif', 'Executive Narrative'),
+        notesText: tr(
+          `Pendapatan usaha periode ${periodLabel.toLowerCase()} tercatat ${formatCurrency(incomeStatement.totalRevenueIdr)} dengan margin kotor ${grossMarginPct.toFixed(1)}% dan laba bersih ${formatCurrency(incomeStatement.netIncomeIdr)}. Posisi kas & bank ${formatCurrency(cashAndBankIdr)} dan modal kerja bersih ${formatCurrency(netWorkingCapitalIdr)}.`,
+          `For ${periodLabel.toLowerCase()}, operating revenue reached ${formatCurrency(incomeStatement.totalRevenueIdr)} with ${grossMarginPct.toFixed(1)}% gross margin and ${formatCurrency(incomeStatement.netIncomeIdr)} net income.`
+        ),
+        signerName: currentUser?.displayName || state.settings.companyName,
+      }),
+      () => exportExecutiveBoardPdf(briefingParams)
+    );
   };
 
   return (
@@ -487,11 +539,11 @@ export function DashboardView({ erp }: { erp: ErpController }) {
               type="button"
               variant="default"
               size="sm"
-              onClick={handleExportBriefing}
+              onClick={handleOpenBriefingPreview}
               className="whitespace-nowrap shrink-0"
             >
-              <FileDown className="h-4 w-4" />
-              {tr('Briefing PDF', 'Briefing PDF')}
+              <Printer className="h-4 w-4" />
+              {tr('Cetak Preview', 'Print Preview')}
             </Button>
           </div>
         </div>
@@ -1444,7 +1496,7 @@ export function DashboardView({ erp }: { erp: ErpController }) {
                 </Button>
               </div>
             ) : (
-              <div className="divide-y divide-slate-100">
+              <div className="divide-y divide-slate-100 max-h-[360px] overflow-y-auto pr-1">
                 {activeRankingList.map((item, idx) => (
                   <div key={item.id} className="py-2.5 first:pt-0 last:pb-0 space-y-1.5">
                     <div className="flex items-center justify-between gap-2 text-xs">

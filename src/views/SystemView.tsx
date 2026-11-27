@@ -1,6 +1,7 @@
-import { AlertTriangle, Check, Copy, Mail, MessageSquare, Trash2 } from 'lucide-react';
+import { AlertTriangle, Check, CheckCheck, Copy, Download, Mail, MessageSquare, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { BulkActionBar, SelectCheckbox } from '../components/ui/BulkActions';
 import {
   Button,
   Card,
@@ -23,6 +24,7 @@ import {
   Textarea,
 } from '../components/ui/primitives';
 import type { ErpController } from '../controllers/useErpController';
+import { useBulkSelection } from '../hooks/useBulkSelection';
 import { useI18n } from '../lib/i18n';
 import {
   buildReminderDrafts,
@@ -32,6 +34,7 @@ import {
   isCompanyPkp,
 } from '../models/erpLogic';
 import { hasPermission } from '../models/rbac';
+import { exportTableToCsv } from '../services/exportService';
 
 function sanitizeDigits(raw: string): string {
   const digits = raw.replace(/[^\d]/g, '');
@@ -130,6 +133,29 @@ export function SystemView({ erp }: { erp: ErpController }) {
     }
   };
 
+  const auditIds = useMemo(() => state.auditLogs.map((l) => l.id), [state.auditLogs]);
+  const auditSelection = useBulkSelection(auditIds);
+  const notifIds = useMemo(() => state.notifications.map((n) => n.id), [state.notifications]);
+  const notifSelection = useBulkSelection(notifIds);
+
+  const exportSelectedAudits = () => {
+    const picked = auditSelection.pickSelected(state.auditLogs);
+    if (picked.length === 0) return;
+    exportTableToCsv(
+      `Audit_Log_Terpilih_${new Date().toISOString().slice(0, 10)}`,
+      ['Waktu', 'Modul', 'Aksi', 'Pengguna', 'Role', 'Detail'],
+      picked.map((l) => [
+        (l.createdAt || '').slice(0, 19).replace('T', ' '),
+        l.module,
+        l.action,
+        l.actorEmail || l.actorId,
+        l.actorRole,
+        l.details || '-',
+      ])
+    );
+    toast.success(`${picked.length} baris Audit Log diekspor ke CSV.`);
+  };
+
   return (
     <div className="space-y-5">
       <div>
@@ -158,9 +184,54 @@ export function SystemView({ erp }: { erp: ErpController }) {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="audit">
+        <TabsContent value="audit" className="space-y-3">
+          {state.auditLogs.length > 0 && (
+            <div className="flex items-center justify-between gap-2 md:hidden px-1">
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={auditSelection.allVisibleSelected}
+                  indeterminate={auditSelection.someVisibleSelected}
+                  onChange={auditSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua log audit"
+                />
+                <span>Pilih Semua ({state.auditLogs.length})</span>
+              </label>
+            </div>
+          )}
+
+          <BulkActionBar
+            selectedCount={auditSelection.selectedCount}
+            itemLabel="log audit"
+            onClear={auditSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: exportSelectedAudits,
+              },
+              ...(isDirektur
+                ? [
+                    {
+                      id: 'delete-bulk',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: `Konfirmasi Hapus (${auditSelection.selectedCount})`,
+                      onClick: async () => {
+                        await erp.bulkDeleteAuditLogs(Array.from(auditSelection.selectedIds));
+                        auditSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
           {/* Mobile Audit Cards */}
-          <div className="space-y-2.5 md:hidden">
+          <div className="space-y-2.5 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {state.auditLogs.length === 0 ? (
               <Card>
                 <CardContent className="py-8 text-center text-xs text-slate-500">
@@ -169,10 +240,17 @@ export function SystemView({ erp }: { erp: ErpController }) {
               </Card>
             ) : (
               state.auditLogs.map((log) => (
-                <Card key={`m_aud_${log.id}`}>
+                <Card key={`m_aud_${log.id}`} className={auditSelection.isSelected(log.id) ? 'border-[#1B5E99] bg-[#F4F8FC]' : ''}>
                   <CardContent className="p-3.5 space-y-1.5 text-xs">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-[#0B1B3A]">{log.action}</span>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <SelectCheckbox
+                          checked={auditSelection.isSelected(log.id)}
+                          onChange={() => auditSelection.toggleOne(log.id)}
+                          ariaLabel={`Pilih log audit ${log.action}`}
+                        />
+                        <span className="font-semibold text-[#0B1B3A] truncate">{log.action}</span>
+                      </div>
                       <StatusLabel status={log.module} tone="info" />
                     </div>
                     <div className="text-[11px] text-slate-600">{log.details || '-'}</div>
@@ -215,11 +293,19 @@ export function SystemView({ erp }: { erp: ErpController }) {
 
           {/* Desktop Audit Table */}
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4 font-semibold">Waktu</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={auditSelection.allVisibleSelected}
+                        indeterminate={auditSelection.someVisibleSelected}
+                        onChange={auditSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua log audit"
+                      />
+                    </th>
+                    <th className="py-3 px-3 font-semibold">Waktu</th>
                     <th className="py-3 px-3 font-semibold">Modul</th>
                     <th className="py-3 px-3 font-semibold">Aksi</th>
                     <th className="py-3 px-3 font-semibold">Pengguna &amp; Role</th>
@@ -230,14 +316,24 @@ export function SystemView({ erp }: { erp: ErpController }) {
                 <tbody className="divide-y divide-slate-100">
                   {state.auditLogs.length === 0 ? (
                     <tr>
-                      <td colSpan={isDirektur ? 6 : 5} className="py-8 text-center text-slate-500">
+                      <td colSpan={isDirektur ? 7 : 6} className="py-8 text-center text-slate-500">
                         Belum ada catatan audit sistem.
                       </td>
                     </tr>
                   ) : (
                     state.auditLogs.map((log) => (
-                      <tr key={log.id} className="hover:bg-slate-50/70">
-                        <td className="py-2.5 px-4 font-mono tabular-nums text-slate-500 whitespace-nowrap">
+                      <tr
+                        key={log.id}
+                        className={auditSelection.isSelected(log.id) ? 'bg-[#EFF5FB]/70' : 'hover:bg-slate-50/70'}
+                      >
+                        <td className="py-2.5 pl-4 pr-2">
+                          <SelectCheckbox
+                            checked={auditSelection.isSelected(log.id)}
+                            onChange={() => auditSelection.toggleOne(log.id)}
+                            ariaLabel={`Pilih log audit ${log.action}`}
+                          />
+                        </td>
+                        <td className="py-2.5 px-3 font-mono tabular-nums text-slate-500 whitespace-nowrap">
                           {(log.createdAt || '').slice(0, 19).replace('T', ' ') || '-'}
                         </td>
                         <td className="py-2.5 px-3 font-medium text-slate-800">{log.module}</td>
@@ -290,7 +386,7 @@ export function SystemView({ erp }: { erp: ErpController }) {
                 Draft pengingat otomatis untuk piutang jatuh tempo, approval PO, stok minimum, dan batch mendekati expired.
               </p>
             </CardHeader>
-            <CardContent className="p-0 divide-y divide-slate-100">
+            <CardContent className="p-0 divide-y divide-slate-100 max-h-[440px] overflow-y-auto">
               {reminderDrafts.length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-500">
                   Tidak ada follow-up mendesak saat ini.
@@ -369,10 +465,58 @@ export function SystemView({ erp }: { erp: ErpController }) {
           </Card>
 
           <Card>
-            <CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
               <CardTitle>Notifikasi Internal Sistem ({state.notifications.length})</CardTitle>
+              {state.notifications.length > 0 && (
+                <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600 cursor-pointer">
+                  <SelectCheckbox
+                    checked={notifSelection.allVisibleSelected}
+                    indeterminate={notifSelection.someVisibleSelected}
+                    onChange={notifSelection.toggleAllVisible}
+                    ariaLabel="Pilih semua notifikasi"
+                  />
+                  <span>Pilih Semua</span>
+                </label>
+              )}
             </CardHeader>
-            <CardContent className="p-0 divide-y divide-slate-100">
+            {notifSelection.selectedCount > 0 && (
+              <div className="px-4 pb-3">
+                <BulkActionBar
+                  selectedCount={notifSelection.selectedCount}
+                  itemLabel="notifikasi"
+                  onClear={notifSelection.clearSelection}
+                  actions={[
+                    {
+                      id: 'mark-read-bulk',
+                      label: 'Tandai Dibaca',
+                      icon: <CheckCheck className="h-3.5 w-3.5" />,
+                      variant: 'outline',
+                      onClick: async () => {
+                        await erp.bulkMarkNotificationsRead(Array.from(notifSelection.selectedIds));
+                        notifSelection.clearSelection();
+                      },
+                    },
+                    ...(isDirektur
+                      ? [
+                          {
+                            id: 'delete-notif-bulk',
+                            label: 'Hapus Terpilih',
+                            icon: <Trash2 className="h-3.5 w-3.5" />,
+                            variant: 'destructive' as const,
+                            requiresConfirm: true,
+                            confirmLabel: `Konfirmasi Hapus (${notifSelection.selectedCount})`,
+                            onClick: async () => {
+                              await erp.bulkDeleteNotifications(Array.from(notifSelection.selectedIds));
+                              notifSelection.clearSelection();
+                            },
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
+              </div>
+            )}
+            <CardContent className="p-0 divide-y divide-slate-100 max-h-[440px] overflow-y-auto">
               {state.notifications.length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-500">
                   Belum ada notifikasi internal tersimpan.
@@ -383,23 +527,33 @@ export function SystemView({ erp }: { erp: ErpController }) {
                   return (
                     <div
                       key={n.id}
-                      className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                      className={`p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                        notifSelection.isSelected(n.id) ? 'bg-[#EFF5FB]/70' : ''
+                      }`}
                     >
-                      <div className="space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-semibold text-[#0B1B3A]">{n.title}</span>
-                          <StatusLabel
-                            status={n.severity}
-                            tone={
-                              n.severity === 'critical'
-                                ? 'danger'
-                                : n.severity === 'warning'
-                                ? 'warning'
-                                : 'info'
-                            }
-                          />
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <SelectCheckbox
+                          checked={notifSelection.isSelected(n.id)}
+                          onChange={() => notifSelection.toggleOne(n.id)}
+                          ariaLabel={`Pilih notifikasi ${n.title}`}
+                          className="mt-1"
+                        />
+                        <div className="space-y-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-semibold text-[#0B1B3A]">{n.title}</span>
+                            <StatusLabel
+                              status={n.severity}
+                              tone={
+                                n.severity === 'critical'
+                                  ? 'danger'
+                                  : n.severity === 'warning'
+                                  ? 'warning'
+                                  : 'info'
+                              }
+                            />
+                          </div>
+                          <p className="text-xs text-slate-600">{n.message}</p>
                         </div>
-                        <p className="text-xs text-slate-600">{n.message}</p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 shrink-0">
                         {!isRead && (

@@ -2,7 +2,7 @@ import {
   Ban,
   Check,
   CheckCircle2,
-  FileDown,
+  Download,
   Lock,
   MapPin,
   Package,
@@ -12,13 +12,14 @@ import {
   Search,
   ShieldCheck,
   Trash2,
-  Truck,
   Upload,
   UserPlus,
   X,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { usePrintDocument } from '../components/PrintableDocumentModal';
+import { BulkActionBar, SelectCheckbox } from '../components/ui/BulkActions';
 import {
   Button,
   Card,
@@ -41,6 +42,7 @@ import {
   Textarea,
 } from '../components/ui/primitives';
 import type { ErpController } from '../controllers/useErpController';
+import { useBulkSelection } from '../hooks/useBulkSelection';
 import { useI18n } from '../lib/i18n';
 import {
   findSeededDummyMasterTargets,
@@ -78,6 +80,7 @@ import {
   exportBuyerRegistrationPdf,
   exportSupplierRegistrationPdf,
   exportSuratJalanPdf,
+  exportTableToCsv,
 } from '../services/exportService';
 
 const TAX_PKP_OPTIONS: TaxPkpStatus[] = ['PKP', 'Non-PKP'];
@@ -347,6 +350,15 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
       (u.department || '').toLowerCase().includes(q)
   );
 
+  const productSelection = useBulkSelection(filteredProducts.map((p) => p.id));
+  const supplierSelection = useBulkSelection(filteredSuppliers.map((s) => s.id));
+  const customerSelection = useBulkSelection(filteredCustomers.map((c) => c.id));
+  const selectableUserIds = useMemo(
+    () => filteredUsers.filter((u) => u.uid !== currentUser?.uid).map((u) => u.uid),
+    [currentUser?.uid, filteredUsers]
+  );
+  const userSelection = useBulkSelection(selectableUserIds);
+
   const dummyTargets = useMemo(
     () => findSeededDummyMasterTargets(state, createInitialSeedState()),
     [state]
@@ -416,8 +428,76 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
             )}
           </div>
 
-          {/* Mobile Products Cards */}
-          <div className="space-y-3 md:hidden">
+          <BulkActionBar
+            selectedCount={productSelection.selectedCount}
+            itemLabel="produk"
+            onClear={productSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-prd-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: () => {
+                  const picked = filteredProducts.filter((p) => productSelection.isSelected(p.id));
+                  exportTableToCsv(
+                    'Master_Produk_Terpilih',
+                    ['SKU', 'Nama Produk', 'Kategori', 'Satuan', 'Mata Uang', 'Harga Beli', 'Harga Jual', 'Total Stok'],
+                    picked.map((p) => [
+                      p.sku,
+                      p.name,
+                      p.categoryName || '-',
+                      p.uomCode,
+                      p.currency,
+                      p.buyPrice,
+                      p.sellPrice,
+                      p.isService ? 0 : getTotalProductStock(p),
+                    ])
+                  );
+                  toast.success(`${picked.length} produk diekspor ke CSV.`);
+                },
+              },
+              ...(canDeleteMaster
+                ? [
+                    {
+                      id: 'delete-prd',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: 'Konfirmasi Hapus',
+                      onClick: async () => {
+                        const ids = Array.from(productSelection.selectedIds);
+                        const ok = await erp.bulkDeleteProducts(ids);
+                        if (ok) productSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
+          {/* Mobile Products Select All + Bounded Scroll Cards */}
+          {filteredProducts.length > 0 && (
+            <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs md:hidden">
+              <label className="inline-flex items-center gap-2 font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={productSelection.allVisibleSelected}
+                  indeterminate={productSelection.someVisibleSelected}
+                  onChange={productSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua produk"
+                />
+                <span>Pilih Semua ({filteredProducts.length})</span>
+              </label>
+              {productSelection.selectedCount > 0 && (
+                <span className="font-semibold text-[#1B5E99]">
+                  {productSelection.selectedCount} dipilih
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {filteredProducts.length === 0 ? (
               <Card>
                 <CardContent className="py-8 text-center text-xs text-slate-500">
@@ -429,10 +509,18 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                 const total = getTotalProductStock(p);
                 const low = isLowStockProduct(p);
                 return (
-                  <Card key={`m_prd_${p.id}`}>
+                  <Card
+                    key={`m_prd_${p.id}`}
+                    className={productSelection.isSelected(p.id) ? 'ring-2 ring-[#1B5E99]/40 bg-[#F4F8FD]' : ''}
+                  >
                     <CardContent className="p-4 space-y-3 text-xs">
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2.5 min-w-0">
+                          <SelectCheckbox
+                            checked={productSelection.isSelected(p.id)}
+                            onChange={() => productSelection.toggleOne(p.id)}
+                            ariaLabel={`Pilih produk ${p.name}`}
+                          />
                           {p.imageUrl ? (
                             <img
                               src={p.imageUrl}
@@ -519,11 +607,19 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
 
           {/* Desktop Products Table */}
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4 font-semibold">SKU &amp; Nama Produk</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={productSelection.allVisibleSelected}
+                        indeterminate={productSelection.someVisibleSelected}
+                        onChange={productSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua produk"
+                      />
+                    </th>
+                    <th className="py-3 px-3 font-semibold">SKU &amp; Nama Produk</th>
                     <th className="py-3 px-3 font-semibold">Kategori</th>
                     <th className="py-3 px-3 font-semibold text-right">Harga Beli</th>
                     <th className="py-3 px-3 font-semibold text-right">Harga Jual</th>
@@ -535,7 +631,7 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                 <tbody className="divide-y divide-slate-100">
                   {filteredProducts.length === 0 ? (
                     <tr>
-                      <td colSpan={showMasterActions ? 7 : 6} className="py-8 text-center text-slate-500">
+                      <td colSpan={showMasterActions ? 8 : 7} className="py-8 text-center text-slate-500">
                         Belum ada data produk.
                       </td>
                     </tr>
@@ -544,8 +640,18 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                       const total = getTotalProductStock(p);
                       const low = isLowStockProduct(p);
                       return (
-                        <tr key={p.id} className="hover:bg-slate-50/70">
-                          <td className="py-2.5 px-4">
+                        <tr
+                          key={p.id}
+                          className={productSelection.isSelected(p.id) ? 'bg-[#EFF5FB]/70' : 'hover:bg-slate-50/70'}
+                        >
+                          <td className="py-2.5 pl-4 pr-2">
+                            <SelectCheckbox
+                              checked={productSelection.isSelected(p.id)}
+                              onChange={() => productSelection.toggleOne(p.id)}
+                              ariaLabel={`Pilih produk ${p.name}`}
+                            />
+                          </td>
+                          <td className="py-2.5 px-3">
                             <div className="flex items-center gap-3">
                               {p.imageUrl ? (
                                 <img
@@ -668,8 +774,109 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
             </div>
           )}
 
-          {/* Mobile Suppliers Cards */}
-          <div className="space-y-3 md:hidden">
+          <BulkActionBar
+            selectedCount={supplierSelection.selectedCount}
+            itemLabel="supplier"
+            onClear={supplierSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-sup-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: () => {
+                  const picked = filteredSuppliers.filter((s) => supplierSelection.isSelected(s.id));
+                  if (isWarehouseFieldView) {
+                    exportTableToCsv(
+                      'Supplier_Lapangan_Terpilih',
+                      ['Kode', 'Nama Supplier', 'Kategori', 'PIC', 'Telepon', 'Alamat'],
+                      picked.map((s) => [s.code, s.name, s.vendorCategory || '-', s.contactPerson || '-', s.phone || '-', s.address || '-'])
+                    );
+                  } else {
+                    exportTableToCsv(
+                      'Master_Supplier_Terpilih',
+                      ['Kode', 'Nama Supplier', 'Kategori', 'Status', 'NPWP', 'Bank', 'No Rekening', 'Syarat Bayar'],
+                      picked.map((s) => [
+                        s.code,
+                        s.name,
+                        s.vendorCategory || '-',
+                        getPartnerVerificationStatus(s),
+                        s.npwp || '-',
+                        s.bankName || '-',
+                        s.bankAccount || '-',
+                        s.paymentScheme || `TOP ${s.paymentTermDays} Hari`,
+                      ])
+                    );
+                  }
+                  toast.success(`${picked.length} supplier diekspor ke CSV.`);
+                },
+              },
+              ...(canApprovePartner
+                ? [
+                    {
+                      id: 'approve-sup',
+                      label: 'Approve Terpilih',
+                      icon: <ShieldCheck className="h-3.5 w-3.5" />,
+                      variant: 'accent' as const,
+                      onClick: async () => {
+                        const pendingIds = filteredSuppliers
+                          .filter(
+                            (s) =>
+                              supplierSelection.isSelected(s.id) &&
+                              getPartnerVerificationStatus(s) !== 'Verified'
+                          )
+                          .map((s) => s.id);
+                        if (pendingIds.length === 0) {
+                          toast.info('Semua supplier terpilih sudah berstatus Verified.');
+                          return;
+                        }
+                        const ok = await erp.bulkVerifySuppliers(pendingIds, 'Verified');
+                        if (ok) supplierSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+              ...(canDeleteMaster
+                ? [
+                    {
+                      id: 'delete-sup',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: 'Konfirmasi Hapus',
+                      onClick: async () => {
+                        const ids = Array.from(supplierSelection.selectedIds);
+                        const ok = await erp.bulkDeleteSuppliers(ids);
+                        if (ok) supplierSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
+          {/* Mobile Suppliers Select All + Bounded Scroll Cards */}
+          {filteredSuppliers.length > 0 && (
+            <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs md:hidden">
+              <label className="inline-flex items-center gap-2 font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={supplierSelection.allVisibleSelected}
+                  indeterminate={supplierSelection.someVisibleSelected}
+                  onChange={supplierSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua supplier"
+                />
+                <span>Pilih Semua ({filteredSuppliers.length})</span>
+              </label>
+              {supplierSelection.selectedCount > 0 && (
+                <span className="font-semibold text-[#1B5E99]">
+                  {supplierSelection.selectedCount} dipilih
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {filteredSuppliers.length === 0 ? (
               <Card>
                 <CardContent className="py-8 text-center text-xs text-slate-500">
@@ -684,13 +891,24 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                     ? s.paymentScheme
                     : `TOP · NET ${s.paymentTermDays} Hari`;
                 return (
-                  <Card key={`m_sup_${s.id}`}>
+                  <Card
+                    key={`m_sup_${s.id}`}
+                    className={supplierSelection.isSelected(s.id) ? 'ring-2 ring-[#1B5E99]/40 bg-[#F4F8FD]' : ''}
+                  >
                     <CardContent className="p-4 space-y-2.5 text-xs">
                       <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="font-semibold text-[#0B1B3A] text-sm">{s.name}</div>
-                          <div className="text-[11px] font-mono text-slate-500">
-                            {s.code} · {s.vendorCategory || 'Safety/MRO'}
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          <SelectCheckbox
+                            checked={supplierSelection.isSelected(s.id)}
+                            onChange={() => supplierSelection.toggleOne(s.id)}
+                            ariaLabel={`Pilih supplier ${s.name}`}
+                            className="mt-0.5"
+                          />
+                          <div className="min-w-0">
+                            <div className="font-semibold text-[#0B1B3A] text-sm">{s.name}</div>
+                            <div className="text-[11px] font-mono text-slate-500">
+                              {s.code} · {s.vendorCategory || 'Safety/MRO'}
+                            </div>
                           </div>
                         </div>
                         {!isWarehouseFieldView && (
@@ -724,33 +942,21 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                       {(!isWarehouseFieldView && vStatus === 'Verified' || showSupplierActions) && (
                         <div className="flex flex-wrap items-center gap-2 pt-1">
                           {!isWarehouseFieldView && vStatus === 'Verified' && (
-                            <>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() =>
-                                  openPrintPreview(
-                                    buildSupplierRegistrationPrintDoc(s, state.settings),
-                                    () => exportSupplierRegistrationPdf(s, state.settings)
-                                  )
-                                }
-                                className="border-emerald-200 text-emerald-800 hover:bg-emerald-50"
-                              >
-                                <Printer className="h-3.5 w-3.5" />
-                                Cetak Bukti
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => void exportSupplierRegistrationPdf(s, state.settings)}
-                                className="border-emerald-200 text-emerald-800 hover:bg-emerald-50"
-                              >
-                                <FileDown className="h-3.5 w-3.5" />
-                                Bukti Registrasi
-                              </Button>
-                            </>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() =>
+                                openPrintPreview(
+                                  buildSupplierRegistrationPrintDoc(s, state.settings),
+                                  () => exportSupplierRegistrationPdf(s, state.settings)
+                                )
+                              }
+                              className="border-emerald-200 text-emerald-800 hover:bg-emerald-50"
+                            >
+                              <Printer className="h-3.5 w-3.5" />
+                              Cetak Preview
+                            </Button>
                           )}
                           {canApprovePartner && vStatus !== 'Verified' && (
                             <Button
@@ -819,11 +1025,19 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
 
           {/* Desktop Suppliers Table */}
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
-                    <th className="py-3 px-4 font-semibold">Supplier &amp; Kategori</th>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={supplierSelection.allVisibleSelected}
+                        indeterminate={supplierSelection.someVisibleSelected}
+                        onChange={supplierSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua supplier"
+                      />
+                    </th>
+                    <th className="py-3 px-3 font-semibold">Supplier &amp; Kategori</th>
                     <th className="py-3 px-3 font-semibold">
                       {isWarehouseFieldView ? 'Kontak & Alamat' : 'Legalitas & Pajak'}
                     </th>
@@ -839,7 +1053,7 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                   {filteredSuppliers.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={isWarehouseFieldView ? 2 : 6}
+                        colSpan={isWarehouseFieldView ? 3 : 7}
                         className="py-8 text-center text-slate-500"
                       >
                         Belum ada data supplier.
@@ -853,8 +1067,18 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                           ? s.paymentScheme
                           : `TOP · NET ${s.paymentTermDays} Hari`;
                       return (
-                        <tr key={s.id} className="hover:bg-slate-50/70 align-top">
-                          <td className="py-3 px-4">
+                        <tr
+                          key={s.id}
+                          className={`align-top ${supplierSelection.isSelected(s.id) ? 'bg-[#EFF5FB]/70' : 'hover:bg-slate-50/70'}`}
+                        >
+                          <td className="py-3 pl-4 pr-2">
+                            <SelectCheckbox
+                              checked={supplierSelection.isSelected(s.id)}
+                              onChange={() => supplierSelection.toggleOne(s.id)}
+                              ariaLabel={`Pilih supplier ${s.name}`}
+                            />
+                          </td>
+                          <td className="py-3 px-3">
                             <div className="font-medium text-slate-900">{s.name}</div>
                             <div className="text-[11px] font-mono text-slate-500">
                               {s.code} · {s.vendorCategory || 'Safety/MRO'}
@@ -896,35 +1120,22 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                           {(!isWarehouseFieldView || showSupplierActions) && (
                             <td className="py-3 px-4 text-right space-x-1 whitespace-nowrap">
                               {!isWarehouseFieldView && vStatus === 'Verified' && (
-                                <>
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() =>
-                                      openPrintPreview(
-                                        buildSupplierRegistrationPrintDoc(s, state.settings),
-                                        () => exportSupplierRegistrationPdf(s, state.settings)
-                                      )
-                                    }
-                                    aria-label={`Cetak bukti registrasi supplier ${s.name}`}
-                                    className="border-emerald-200 text-emerald-800 hover:bg-emerald-50"
-                                  >
-                                    <Printer className="h-3.5 w-3.5" />
-                                    Cetak Bukti
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => void exportSupplierRegistrationPdf(s, state.settings)}
-                                    aria-label={`Export bukti registrasi supplier ${s.name}`}
-                                    className="border-emerald-200 text-emerald-800 hover:bg-emerald-50"
-                                  >
-                                    <FileDown className="h-3.5 w-3.5" />
-                                    Bukti Registrasi
-                                  </Button>
-                                </>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() =>
+                                    openPrintPreview(
+                                      buildSupplierRegistrationPrintDoc(s, state.settings),
+                                      () => exportSupplierRegistrationPdf(s, state.settings)
+                                    )
+                                  }
+                                  aria-label={`Cetak bukti registrasi supplier ${s.name}`}
+                                  className="border-emerald-200 text-emerald-800 hover:bg-emerald-50"
+                                >
+                                  <Printer className="h-3.5 w-3.5" />
+                                  Cetak Preview
+                                </Button>
                               )}
                               {canApprovePartner && vStatus !== 'Verified' && (
                                 <Button
@@ -1018,7 +1229,7 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
               </div>
 
               {/* Mobile Warehouse Read-Only Customer Cards */}
-              <div className="space-y-3 md:hidden">
+              <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
                 {filteredCustomers.map((c) => {
                   const latestSo =
                     state.salesOrders.find((so) => so.customerId === c.id && so.status !== 'Draft') ||
@@ -1049,6 +1260,7 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                               type="button"
                               variant="outline"
                               size="sm"
+                              className="w-full"
                               onClick={() => {
                                 const wh = state.warehouses.find((w) => w.id === latestSo.warehouseId);
                                 openPrintPreview(
@@ -1058,24 +1270,7 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                               }}
                             >
                               <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                              Cetak SJ
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="flex-1"
-                              onClick={() =>
-                                exportSuratJalanPdf(
-                                  latestSo,
-                                  state.settings,
-                                  c,
-                                  state.warehouses.find((w) => w.id === latestSo.warehouseId)
-                                )
-                              }
-                            >
-                              <Truck className="h-3.5 w-3.5 text-[#D9AA32]" />
-                              Surat Jalan ({latestSo.soNumber})
+                              Cetak Preview ({latestSo.soNumber})
                             </Button>
                           </div>
                         ) : (
@@ -1091,9 +1286,9 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
 
               {/* Desktop Warehouse Read-Only Customer Table */}
               <Card className="hidden md:block">
-                <div className="overflow-x-auto">
+                <div className="max-h-[500px] overflow-auto">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                       <tr>
                         <th className="py-3 px-4 font-semibold">Kode &amp; Buyer</th>
                         <th className="py-3 px-3 font-semibold">Alamat Pengiriman (Drop Point)</th>
@@ -1132,39 +1327,21 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                               </td>
                               <td className="py-3 px-4 text-right whitespace-nowrap">
                                 {latestSo ? (
-                                  <div className="inline-flex items-center gap-1">
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => {
-                                        const wh = state.warehouses.find((w) => w.id === latestSo.warehouseId);
-                                        openPrintPreview(
-                                          buildSuratJalanPrintDoc(latestSo, state.settings, c, wh),
-                                          () => exportSuratJalanPdf(latestSo, state.settings, c, wh)
-                                        );
-                                      }}
-                                    >
-                                      <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                                      Cetak
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() =>
-                                        exportSuratJalanPdf(
-                                          latestSo,
-                                          state.settings,
-                                          c,
-                                          state.warehouses.find((w) => w.id === latestSo.warehouseId)
-                                        )
-                                      }
-                                    >
-                                      <Truck className="h-3.5 w-3.5 text-[#D9AA32]" />
-                                      Surat Jalan ({latestSo.soNumber})
-                                    </Button>
-                                  </div>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => {
+                                      const wh = state.warehouses.find((w) => w.id === latestSo.warehouseId);
+                                      openPrintPreview(
+                                        buildSuratJalanPrintDoc(latestSo, state.settings, c, wh),
+                                        () => exportSuratJalanPdf(latestSo, state.settings, c, wh)
+                                      );
+                                    }}
+                                  >
+                                    <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
+                                    Cetak Preview ({latestSo.soNumber})
+                                  </Button>
                                 ) : (
                                   <span className="text-[11px] text-slate-400">Belum ada SO</span>
                                 )}
@@ -1199,8 +1376,76 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                 )}
               </div>
 
-              {/* Mobile Customers Cards */}
-              <div className="space-y-3 md:hidden">
+              <BulkActionBar
+                selectedCount={customerSelection.selectedCount}
+                itemLabel="buyer"
+                onClear={customerSelection.clearSelection}
+                actions={[
+                  {
+                    id: 'export-cus-csv',
+                    label: 'Export Terpilih CSV',
+                    icon: <Download className="h-3.5 w-3.5" />,
+                    variant: 'outline',
+                    onClick: () => {
+                      const picked = filteredCustomers.filter((c) => customerSelection.isSelected(c.id));
+                      exportTableToCsv(
+                        'Master_Buyer_Terpilih',
+                        ['Kode', 'Nama Buyer', 'Skema Bayar', 'Limit Kredit (IDR)', 'Status', 'NPWP', 'NIB', 'Alamat Kirim'],
+                        picked.map((c) => [
+                          c.code,
+                          c.name,
+                          c.paymentScheme || `TOP ${c.paymentTermDays} Hari`,
+                          c.creditLimit || 0,
+                          getPartnerVerificationStatus(c),
+                          c.npwp || '-',
+                          c.nib || '-',
+                          c.shippingAddress || c.address || '-',
+                        ])
+                      );
+                      toast.success(`${picked.length} buyer diekspor ke CSV.`);
+                    },
+                  },
+                  ...(canDeleteMaster
+                    ? [
+                        {
+                          id: 'delete-cus',
+                          label: 'Hapus Terpilih',
+                          icon: <Trash2 className="h-3.5 w-3.5" />,
+                          variant: 'destructive' as const,
+                          requiresConfirm: true,
+                          confirmLabel: 'Konfirmasi Hapus',
+                          onClick: async () => {
+                            const ids = Array.from(customerSelection.selectedIds);
+                            const ok = await erp.bulkDeleteCustomers(ids);
+                            if (ok) customerSelection.clearSelection();
+                          },
+                        },
+                      ]
+                    : []),
+                ]}
+              />
+
+              {/* Mobile Customers Select All + Bounded Scroll Cards */}
+              {filteredCustomers.length > 0 && (
+                <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs md:hidden">
+                  <label className="inline-flex items-center gap-2 font-medium text-slate-700 cursor-pointer">
+                    <SelectCheckbox
+                      checked={customerSelection.allVisibleSelected}
+                      indeterminate={customerSelection.someVisibleSelected}
+                      onChange={customerSelection.toggleAllVisible}
+                      ariaLabel="Pilih semua buyer"
+                    />
+                    <span>Pilih Semua ({filteredCustomers.length})</span>
+                  </label>
+                  {customerSelection.selectedCount > 0 && (
+                    <span className="font-semibold text-[#1B5E99]">
+                      {customerSelection.selectedCount} dipilih
+                    </span>
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
                 {filteredCustomers.length === 0 ? (
                   <Card>
                     <CardContent className="py-8 text-center text-xs text-slate-500">
@@ -1218,13 +1463,24 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                           ? 'TOP 14 Hari'
                           : 'CBD');
                     return (
-                      <Card key={`m_cus_${c.id}`}>
+                      <Card
+                        key={`m_cus_${c.id}`}
+                        className={customerSelection.isSelected(c.id) ? 'ring-2 ring-[#1B5E99]/40 bg-[#F4F8FD]' : ''}
+                      >
                         <CardContent className="p-4 space-y-2.5 text-xs">
                           <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="font-semibold text-[#0B1B3A] text-sm">{c.name}</div>
-                              <div className="text-[11px] font-mono text-slate-500">
-                                {c.code} · {c.taxStatus || 'PKP'} · {schemeLabel}
+                            <div className="flex items-start gap-2.5 min-w-0">
+                              <SelectCheckbox
+                                checked={customerSelection.isSelected(c.id)}
+                                onChange={() => customerSelection.toggleOne(c.id)}
+                                ariaLabel={`Pilih buyer ${c.name}`}
+                                className="mt-0.5"
+                              />
+                              <div className="min-w-0">
+                                <div className="font-semibold text-[#0B1B3A] text-sm">{c.name}</div>
+                                <div className="text-[11px] font-mono text-slate-500">
+                                  {c.code} · {c.taxStatus || 'PKP'} · {schemeLabel}
+                                </div>
                               </div>
                             </div>
                             <StatusLabel status={vStatus} tone={getVerificationTone(vStatus)} />
@@ -1261,33 +1517,21 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                           {(vStatus === 'Verified' || showBuyerActions) && (
                             <div className="flex flex-wrap items-center gap-2 pt-1">
                               {vStatus === 'Verified' && (
-                                <>
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() =>
-                                      openPrintPreview(
-                                        buildBuyerRegistrationPrintDoc(c, state.settings),
-                                        () => exportBuyerRegistrationPdf(c, state.settings)
-                                      )
-                                    }
-                                    className="border-emerald-200 text-emerald-800 hover:bg-emerald-50"
-                                  >
-                                    <Printer className="h-3.5 w-3.5" />
-                                    Cetak Bukti
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => void exportBuyerRegistrationPdf(c, state.settings)}
-                                    className="border-emerald-200 text-emerald-800 hover:bg-emerald-50"
-                                  >
-                                    <FileDown className="h-3.5 w-3.5" />
-                                    Bukti Registrasi
-                                  </Button>
-                                </>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() =>
+                                    openPrintPreview(
+                                      buildBuyerRegistrationPrintDoc(c, state.settings),
+                                      () => exportBuyerRegistrationPdf(c, state.settings)
+                                    )
+                                  }
+                                  className="border-emerald-200 text-emerald-800 hover:bg-emerald-50"
+                                >
+                                  <Printer className="h-3.5 w-3.5" />
+                                  Cetak Preview
+                                </Button>
                               )}
                               {canApprovePartner && (
                                 <Button
@@ -1344,11 +1588,19 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
 
               {/* Desktop Customers Table */}
               <Card className="hidden md:block">
-                <div className="overflow-x-auto">
+                <div className="max-h-[500px] overflow-auto">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                       <tr>
-                        <th className="py-3 px-4 font-semibold">Buyer &amp; Alamat</th>
+                        <th className="py-3 pl-4 pr-2 w-10">
+                          <SelectCheckbox
+                            checked={customerSelection.allVisibleSelected}
+                            indeterminate={customerSelection.someVisibleSelected}
+                            onChange={customerSelection.toggleAllVisible}
+                            ariaLabel="Pilih semua buyer"
+                          />
+                        </th>
+                        <th className="py-3 px-3 font-semibold">Buyer &amp; Alamat</th>
                         <th className="py-3 px-3 font-semibold">3 Kontak PIC (Purch/Gudang/Fin)</th>
                         <th className="py-3 px-3 font-semibold">NPWP &amp; NIB</th>
                         <th className="py-3 px-3 font-semibold text-right">Skema &amp; Credit Limit</th>
@@ -1359,7 +1611,7 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                     <tbody className="divide-y divide-slate-100">
                       {filteredCustomers.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="py-8 text-center text-slate-500">
+                          <td colSpan={7} className="py-8 text-center text-slate-500">
                             Belum ada data buyer.
                           </td>
                         </tr>
@@ -1374,8 +1626,18 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                                 ? 'TOP 14 Hari'
                                 : 'CBD');
                           return (
-                            <tr key={c.id} className="hover:bg-slate-50/70 align-top">
-                              <td className="py-3 px-4 max-w-[260px]">
+                            <tr
+                              key={c.id}
+                              className={`align-top ${customerSelection.isSelected(c.id) ? 'bg-[#EFF5FB]/70' : 'hover:bg-slate-50/70'}`}
+                            >
+                              <td className="py-3 pl-4 pr-2">
+                                <SelectCheckbox
+                                  checked={customerSelection.isSelected(c.id)}
+                                  onChange={() => customerSelection.toggleOne(c.id)}
+                                  ariaLabel={`Pilih buyer ${c.name}`}
+                                />
+                              </td>
+                              <td className="py-3 px-3 max-w-[260px]">
                                 <div className="font-medium text-slate-900">{c.name}</div>
                                 <div className="text-[11px] font-mono text-slate-500">
                                   {c.code} · {c.taxStatus || 'PKP'}
@@ -1418,35 +1680,22 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                               </td>
                               <td className="py-3 px-4 text-right space-x-1 whitespace-nowrap">
                                 {vStatus === 'Verified' && (
-                                  <>
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() =>
-                                        openPrintPreview(
-                                          buildBuyerRegistrationPrintDoc(c, state.settings),
-                                          () => exportBuyerRegistrationPdf(c, state.settings)
-                                        )
-                                      }
-                                      aria-label={`Cetak bukti registrasi buyer ${c.name}`}
-                                      className="border-emerald-200 text-emerald-800 hover:bg-emerald-50"
-                                    >
-                                      <Printer className="h-3.5 w-3.5" />
-                                      Cetak Bukti
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => void exportBuyerRegistrationPdf(c, state.settings)}
-                                      aria-label={`Export bukti registrasi buyer ${c.name}`}
-                                      className="border-emerald-200 text-emerald-800 hover:bg-emerald-50"
-                                    >
-                                      <FileDown className="h-3.5 w-3.5" />
-                                      Bukti Registrasi
-                                    </Button>
-                                  </>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() =>
+                                      openPrintPreview(
+                                        buildBuyerRegistrationPrintDoc(c, state.settings),
+                                        () => exportBuyerRegistrationPdf(c, state.settings)
+                                      )
+                                    }
+                                    aria-label={`Cetak bukti registrasi buyer ${c.name}`}
+                                    className="border-emerald-200 text-emerald-800 hover:bg-emerald-50"
+                                  >
+                                    <Printer className="h-3.5 w-3.5" />
+                                    Cetak Preview
+                                  </Button>
                                 )}
                                 {canApprovePartner && (
                                   <Button
@@ -1613,7 +1862,7 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                     </Button>
                   </form>
                 )}
-                <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+                <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg max-h-72 overflow-y-auto">
                   {state.categories.length === 0 ? (
                     <div className="px-3 py-6 text-center text-xs text-slate-500">
                       Belum ada kategori produk.
@@ -1698,7 +1947,7 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                     </Button>
                   </form>
                 )}
-                <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+                <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg max-h-72 overflow-y-auto">
                   {supplierCategories.map((cat) => {
                     const isEditing = editingSupCat?.original === cat;
                     const usageCount = state.suppliers.filter(
@@ -1842,7 +2091,7 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                     </Button>
                   </form>
                 )}
-                <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+                <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg max-h-72 overflow-y-auto">
                   {state.uoms.length === 0 ? (
                     <div className="px-3 py-6 text-center text-xs text-slate-500">
                       Belum ada satuan UoM.
@@ -1905,26 +2154,98 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
             )}
           </div>
 
-          {/* Mobile User Cards */}
-          <div className="space-y-3 md:hidden">
+          <BulkActionBar
+            selectedCount={userSelection.selectedCount}
+            itemLabel="pengguna"
+            onClear={userSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-usr-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: () => {
+                  const picked = filteredUsers.filter((u) => userSelection.isSelected(u.uid));
+                  exportTableToCsv(
+                    'Master_User_Terpilih',
+                    ['Nama Lengkap', 'Email', 'Departemen', 'Role', 'Status'],
+                    picked.map((u) => [u.displayName, u.email, u.department || '-', u.role, u.active ? 'Aktif' : 'Nonaktif'])
+                  );
+                  toast.success(`${picked.length} user diekspor ke CSV.`);
+                },
+              },
+              ...(canManageUsers
+                ? [
+                    {
+                      id: 'delete-usr',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: 'Konfirmasi Hapus',
+                      onClick: async () => {
+                        const ids = Array.from(userSelection.selectedIds);
+                        const ok = await erp.bulkDeleteUsers(ids);
+                        if (ok) userSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
+          {/* Mobile User Select All + Bounded Scroll Cards */}
+          {canManageUsers && selectableUserIds.length > 0 && (
+            <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs md:hidden">
+              <label className="inline-flex items-center gap-2 font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={userSelection.allVisibleSelected}
+                  indeterminate={userSelection.someVisibleSelected}
+                  onChange={userSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua pengguna"
+                />
+                <span>Pilih Semua ({selectableUserIds.length})</span>
+              </label>
+              {userSelection.selectedCount > 0 && (
+                <span className="font-semibold text-[#1B5E99]">
+                  {userSelection.selectedCount} dipilih
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {filteredUsers.map((u) => {
               const isSelf = currentUser?.uid === u.uid;
               return (
-                <Card key={`m_usr_${u.uid}`}>
+                <Card
+                  key={`m_usr_${u.uid}`}
+                  className={userSelection.isSelected(u.uid) ? 'ring-2 ring-[#1B5E99]/40 bg-[#F4F8FD]' : ''}
+                >
                   <CardContent className="p-4 space-y-3 text-xs">
                     <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="font-semibold text-[#0B1B3A] truncate">
-                          {u.displayName}
-                          {isSelf && (
-                            <span className="ml-1.5 text-[10px] font-semibold text-[#1B5E99]">
-                              (Akun Anda)
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[11px] text-slate-500 truncate">{u.email}</div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">
-                          Dept: {u.department || '-'}
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        {canManageUsers && !isSelf && (
+                          <SelectCheckbox
+                            checked={userSelection.isSelected(u.uid)}
+                            onChange={() => userSelection.toggleOne(u.uid)}
+                            ariaLabel={`Pilih user ${u.displayName}`}
+                            className="mt-0.5"
+                          />
+                        )}
+                        <div className="min-w-0">
+                          <div className="font-semibold text-[#0B1B3A] truncate">
+                            {u.displayName}
+                            {isSelf && (
+                              <span className="ml-1.5 text-[10px] font-semibold text-[#1B5E99]">
+                                (Akun Anda)
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-500 truncate">{u.email}</div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            Dept: {u.department || '-'}
+                          </div>
                         </div>
                       </div>
                       {canManageUsers && !isSelf ? (
@@ -2011,10 +2332,20 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
 
           {/* Desktop User Table */}
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                   <tr>
+                    {canManageUsers && (
+                      <th className="py-3 pl-4 pr-2 w-10">
+                        <SelectCheckbox
+                          checked={userSelection.allVisibleSelected}
+                          indeterminate={userSelection.someVisibleSelected}
+                          onChange={userSelection.toggleAllVisible}
+                          ariaLabel="Pilih semua pengguna"
+                        />
+                      </th>
+                    )}
                     <th className="py-3 px-4 font-semibold">Nama &amp; Email</th>
                     <th className="py-3 px-3 font-semibold">Departemen</th>
                     <th className="py-3 px-3 font-semibold">Role</th>
@@ -2026,7 +2357,21 @@ export function MasterDataView({ erp }: { erp: ErpController }) {
                   {filteredUsers.map((u) => {
                     const isSelf = currentUser?.uid === u.uid;
                     return (
-                      <tr key={u.uid} className="hover:bg-slate-50/70">
+                      <tr
+                        key={u.uid}
+                        className={userSelection.isSelected(u.uid) ? 'bg-[#EFF5FB]/70' : 'hover:bg-slate-50/70'}
+                      >
+                        {canManageUsers && (
+                          <td className="py-3 pl-4 pr-2">
+                            {!isSelf && (
+                              <SelectCheckbox
+                                checked={userSelection.isSelected(u.uid)}
+                                onChange={() => userSelection.toggleOne(u.uid)}
+                                ariaLabel={`Pilih user ${u.displayName}`}
+                              />
+                            )}
+                          </td>
+                        )}
                         <td className="py-3 px-4">
                           <div className="font-medium text-slate-900">
                             {u.displayName}

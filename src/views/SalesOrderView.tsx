@@ -2,7 +2,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   Download,
-  FileDown,
   MapPin,
   Plus,
   Printer,
@@ -14,7 +13,9 @@ import {
   Upload,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import { usePrintDocument } from '../components/PrintableDocumentModal';
+import { BulkActionBar, SelectCheckbox } from '../components/ui/BulkActions';
 import {
   Button,
   Card,
@@ -39,6 +40,7 @@ import {
   Textarea,
 } from '../components/ui/primitives';
 import type { ErpController } from '../controllers/useErpController';
+import { useBulkSelection } from '../hooks/useBulkSelection';
 import { useI18n } from '../lib/i18n';
 import {
   calculateOrderTotals,
@@ -81,6 +83,7 @@ import {
   exportSalesQuotationPdf,
   exportSuratJalanCsv,
   exportSuratJalanPdf,
+  exportTableToCsv,
 } from '../services/exportService';
 
 function getSoTone(status: SoStatus): 'neutral' | 'success' | 'warning' | 'info' {
@@ -201,6 +204,101 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
   const [retDate, setRetDate] = useState(new Date().toISOString().slice(0, 10));
   const [retReason, setRetReason] = useState('');
   const [retQtys, setRetQtys] = useState<Record<string, string>>({});
+
+  const soIds = useMemo(() => state.salesOrders.map((s) => s.id), [state.salesOrders]);
+  const soSelection = useBulkSelection(soIds);
+  const qtIds = useMemo(() => state.salesQuotations.map((q) => q.id), [state.salesQuotations]);
+  const qtSelection = useBulkSelection(qtIds);
+  const retIds = useMemo(() => salesReturns.map((r) => r.id), [salesReturns]);
+  const retSelection = useBulkSelection(retIds);
+
+  const selectedSos = useMemo(
+    () => soSelection.pickSelected(state.salesOrders),
+    [soSelection, state.salesOrders]
+  );
+  const selectedDraftSoIds = useMemo(
+    () => selectedSos.filter((s) => s.status === 'Draft').map((s) => s.id),
+    [selectedSos]
+  );
+
+  const selectedQts = useMemo(
+    () => qtSelection.pickSelected(state.salesQuotations),
+    [qtSelection, state.salesQuotations]
+  );
+  const selectedDraftQtIds = useMemo(
+    () => selectedQts.filter((q) => q.status === 'Draft').map((q) => q.id),
+    [selectedQts]
+  );
+  const selectedRejectableQtIds = useMemo(
+    () => selectedQts.filter((q) => q.status === 'Draft' || q.status === 'Sent').map((q) => q.id),
+    [selectedQts]
+  );
+
+  const selectedRets = useMemo(
+    () => retSelection.pickSelected(salesReturns),
+    [retSelection, salesReturns]
+  );
+  const selectedPendingRetIds = useMemo(
+    () => selectedRets.filter((r) => r.status === 'Pending').map((r) => r.id),
+    [selectedRets]
+  );
+
+  const exportSelectedSos = () => {
+    if (selectedSos.length === 0) return;
+    exportTableToCsv(
+      `Sales_Orders_Terpilih_${new Date().toISOString().slice(0, 10)}`,
+      ['No. SO', 'Customer', 'Gudang', 'Jatuh Tempo', 'Mata Uang', 'Total', 'Status', 'Invoice'],
+      selectedSos.map((s) => [
+        s.soNumber || '-',
+        s.customerName || '-',
+        s.warehouseName || '-',
+        s.dueDate || '-',
+        s.currency || 'IDR',
+        s.totalAmount ?? 0,
+        s.status || '-',
+        s.invoiceNumber || '-',
+      ])
+    );
+    toast.success(`${selectedSos.length} Sales Order diekspor ke CSV.`);
+  };
+
+  const exportSelectedQts = () => {
+    if (selectedQts.length === 0) return;
+    exportTableToCsv(
+      `Sales_Quotations_Terpilih_${new Date().toISOString().slice(0, 10)}`,
+      ['No. Quotation', 'Buyer', 'Gudang', 'Berlaku s/d', 'Mata Uang', 'Total', 'Status', 'SO Terbit'],
+      selectedQts.map((q) => [
+        q.quotationNumber || '-',
+        q.customerName || '-',
+        q.warehouseName || '-',
+        q.validUntil || '-',
+        q.currency || 'IDR',
+        q.totalAmount ?? 0,
+        q.status || '-',
+        q.convertedSoNumber || '-',
+      ])
+    );
+    toast.success(`${selectedQts.length} Quotation diekspor ke CSV.`);
+  };
+
+  const exportSelectedReturns = () => {
+    if (selectedRets.length === 0) return;
+    exportTableToCsv(
+      `Retur_Penjualan_Terpilih_${new Date().toISOString().slice(0, 10)}`,
+      ['No. Retur', 'Ref SO', 'Buyer', 'Tanggal', 'Alasan', 'Mata Uang', 'Total', 'Status'],
+      selectedRets.map((r) => [
+        r.returnNumber,
+        r.referenceOrderNumber,
+        r.counterpartyName,
+        r.returnDate,
+        r.reason,
+        r.currency,
+        r.totalAmount,
+        r.status,
+      ])
+    );
+    toast.success(`${selectedRets.length} Retur Penjualan diekspor ke CSV.`);
+  };
 
   const selectedSo: SalesOrder | undefined = state.salesOrders.find(
     (s) => s.id === selectedSoId
@@ -398,8 +496,67 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
         </TabsList>
 
         <TabsContent value="orders" className="space-y-4">
+          {state.salesOrders.length > 0 && (
+            <div className="flex items-center justify-between gap-2 md:hidden px-1">
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={soSelection.allVisibleSelected}
+                  indeterminate={soSelection.someVisibleSelected}
+                  onChange={soSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua Sales Order"
+                />
+                <span>Pilih Semua ({state.salesOrders.length})</span>
+              </label>
+            </div>
+          )}
+
+          <BulkActionBar
+            selectedCount={soSelection.selectedCount}
+            itemLabel="Sales Order"
+            onClear={soSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-so-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: exportSelectedSos,
+              },
+              ...(canCreate && selectedDraftSoIds.length > 0
+                ? [
+                    {
+                      id: 'confirm-so-bulk',
+                      label: `Konfirmasi Draft (${selectedDraftSoIds.length})`,
+                      icon: <CheckCircle2 className="h-3.5 w-3.5" />,
+                      variant: 'accent' as const,
+                      onClick: async () => {
+                        await erp.bulkConfirmSalesOrders(selectedDraftSoIds);
+                        soSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+              ...(canDelete
+                ? [
+                    {
+                      id: 'delete-so-bulk',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: `Konfirmasi Hapus (${soSelection.selectedCount})`,
+                      onClick: async () => {
+                        await erp.bulkDeleteSalesOrders(Array.from(soSelection.selectedIds));
+                        soSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
       {/* Mobile SO Cards */}
-      <div className="space-y-3 md:hidden">
+      <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
         {state.salesOrders.length === 0 ? (
           <Card>
             <CardContent className="py-8 text-center text-xs text-slate-500">
@@ -407,14 +564,25 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
             </CardContent>
           </Card>
         ) : (
-          state.salesOrders.map((so) => (
-            <Card key={`m_so_${so.id}`}>
+          state.salesOrders.map((so) => {
+            const canShipSo =
+              canDeliver && ['Confirmed', 'Partially Delivered'].includes(so.status);
+            return (
+            <Card key={`m_so_${so.id}`} className={soSelection.isSelected(so.id) ? 'border-[#1B5E99] bg-[#F4F8FC]' : ''}>
               <CardContent className="p-4 space-y-3 text-xs">
                 <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="font-mono font-bold text-[#0B1B3A] text-sm">{so.soNumber}</div>
-                    <div className="text-[11px] text-slate-500">
-                      {so.invoiceNumber ? `Inv: ${so.invoiceNumber}` : `${so.items.length} item`} · Tempo {so.dueDate || '-'}
+                  <div className="flex items-start gap-2 min-w-0">
+                    <SelectCheckbox
+                      checked={soSelection.isSelected(so.id)}
+                      onChange={() => soSelection.toggleOne(so.id)}
+                      ariaLabel={`Pilih SO ${so.soNumber}`}
+                      className="mt-0.5"
+                    />
+                    <div className="min-w-0">
+                      <div className="font-mono font-bold text-[#0B1B3A] text-sm">{so.soNumber}</div>
+                      <div className="text-[11px] text-slate-500">
+                        {so.invoiceNumber ? `Inv: ${so.invoiceNumber}` : `${so.items.length} item`} · Tempo {so.dueDate || '-'}
+                      </div>
                     </div>
                   </div>
                   <StatusLabel status={so.status} tone={getSoTone(so.status)} />
@@ -432,16 +600,17 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2 pt-1">
+                <div className={canShipSo ? 'grid grid-cols-2 gap-2 pt-1' : 'pt-1'}>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
+                    className={canShipSo ? '' : 'w-full'}
                     onClick={() => openSoDetail(so, false)}
                   >
                     Detail SO
                   </Button>
-                  {canDeliver && ['Confirmed', 'Partially Delivered'].includes(so.status) ? (
+                  {canShipSo && (
                     <Button
                       type="button"
                       variant="accent"
@@ -451,23 +620,6 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                       <Truck className="h-3.5 w-3.5" />
                       Kirim Barang
                     </Button>
-                  ) : (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        exportSuratJalanPdf(
-                          so,
-                          state.settings,
-                          state.customers.find((c) => c.id === so.customerId),
-                          state.warehouses.find((w) => w.id === so.warehouseId)
-                        )
-                      }
-                    >
-                      <Truck className="h-3.5 w-3.5 text-[#D9AA32]" />
-                      Surat Jalan
-                    </Button>
                   )}
                 </div>
 
@@ -475,9 +627,9 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Button
                       type="button"
-                      variant="ghost"
+                      variant="outline"
                       size="sm"
-                      aria-label={`Cetak SO ${so.soNumber}`}
+                      aria-label={`Preview SO ${so.soNumber}`}
                       onClick={() => {
                         const cust = state.customers.find((c) => c.id === so.customerId);
                         const wh = state.warehouses.find((w) => w.id === so.warehouseId);
@@ -488,39 +640,24 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                       }}
                     >
                       <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                      Cetak SO
+                      Preview SO
                     </Button>
                     <Button
                       type="button"
-                      variant="ghost"
+                      variant="outline"
                       size="sm"
-                      onClick={() =>
-                        void exportSalesOrderPdf(
-                          so,
-                          state.settings,
-                          state.customers.find((c) => c.id === so.customerId),
-                          state.warehouses.find((w) => w.id === so.warehouseId)
-                        )
-                      }
-                    >
-                      <FileDown className="h-3.5 w-3.5 text-[#1B5E99]" />
-                      PDF SO
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        void exportSuratJalanPdf(
-                          so,
-                          state.settings,
-                          state.customers.find((c) => c.id === so.customerId),
-                          state.warehouses.find((w) => w.id === so.warehouseId)
-                        )
-                      }
+                      aria-label={`Preview Surat Jalan ${so.soNumber}`}
+                      onClick={() => {
+                        const cust = state.customers.find((c) => c.id === so.customerId);
+                        const wh = state.warehouses.find((w) => w.id === so.warehouseId);
+                        openPrintPreview(
+                          buildSuratJalanPrintDoc(so, state.settings, cust, wh),
+                          () => exportSuratJalanPdf(so, state.settings, cust, wh)
+                        );
+                      }}
                     >
                       <Truck className="h-3.5 w-3.5 text-[#D9AA32]" />
-                      SJ PDF
+                      Preview SJ
                     </Button>
                   </div>
                   {canDelete && (
@@ -539,16 +676,25 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                 </div>
               </CardContent>
             </Card>
-          ))
+            );
+          })
         )}
       </div>
 
       {/* Desktop SO Table */}
       <Card className="hidden md:block">
-        <div className="overflow-x-auto">
+        <div className="max-h-[500px] overflow-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+            <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200">
               <tr>
+                <th className="py-3 pl-4 pr-2 w-10">
+                  <SelectCheckbox
+                    checked={soSelection.allVisibleSelected}
+                    indeterminate={soSelection.someVisibleSelected}
+                    onChange={soSelection.toggleAllVisible}
+                    ariaLabel="Pilih semua Sales Order"
+                  />
+                </th>
                 <th className="py-3 px-4 font-semibold">Nomor SO</th>
                 <th className="py-3 px-3 font-semibold">Customer</th>
                 <th className="py-3 px-3 font-semibold">Gudang Pengirim</th>
@@ -561,13 +707,20 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
             <tbody className="divide-y divide-slate-100">
               {state.salesOrders.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-8 text-center text-slate-500">
+                  <td colSpan={8} className="py-8 text-center text-slate-500">
                     Belum ada data Sales Order.
                   </td>
                 </tr>
               ) : (
                 state.salesOrders.map((so) => (
-                  <tr key={so.id} className="hover:bg-slate-50/70">
+                  <tr key={so.id} className={soSelection.isSelected(so.id) ? 'bg-[#F0F6FC]' : 'hover:bg-slate-50/70'}>
+                    <td className="py-3 pl-4 pr-2">
+                      <SelectCheckbox
+                        checked={soSelection.isSelected(so.id)}
+                        onChange={() => soSelection.toggleOne(so.id)}
+                        ariaLabel={`Pilih SO ${so.soNumber}`}
+                      />
+                    </td>
                     <td className="py-3 px-4">
                       <div className="font-mono font-semibold text-slate-900">{so.soNumber}</div>
                       <div className="text-[11px] text-slate-500">
@@ -590,7 +743,7 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                         type="button"
                         variant="outline"
                         size="sm"
-                        aria-label={`Cetak SO ${so.soNumber}`}
+                        aria-label={`Preview SO ${so.soNumber}`}
                         onClick={() => {
                           const cust = state.customers.find((c) => c.id === so.customerId);
                           const wh = state.warehouses.find((w) => w.id === so.warehouseId);
@@ -601,41 +754,24 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                         }}
                       >
                         <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                        Cetak
+                        Preview SO
                       </Button>
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        aria-label={`Export PDF SO ${so.soNumber}`}
-                        onClick={() =>
-                          void exportSalesOrderPdf(
-                            so,
-                            state.settings,
-                            state.customers.find((c) => c.id === so.customerId),
-                            state.warehouses.find((w) => w.id === so.warehouseId)
-                          )
-                        }
-                      >
-                        <FileDown className="h-3.5 w-3.5 text-[#1B5E99]" />
-                        PDF SO
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        aria-label={`Export Surat Jalan ${so.soNumber}`}
-                        onClick={() =>
-                          void exportSuratJalanPdf(
-                            so,
-                            state.settings,
-                            state.customers.find((c) => c.id === so.customerId),
-                            state.warehouses.find((w) => w.id === so.warehouseId)
-                          )
-                        }
+                        aria-label={`Preview Surat Jalan ${so.soNumber}`}
+                        onClick={() => {
+                          const cust = state.customers.find((c) => c.id === so.customerId);
+                          const wh = state.warehouses.find((w) => w.id === so.warehouseId);
+                          openPrintPreview(
+                            buildSuratJalanPrintDoc(so, state.settings, cust, wh),
+                            () => exportSuratJalanPdf(so, state.settings, cust, wh)
+                          );
+                        }}
                       >
                         <Truck className="h-3.5 w-3.5 text-[#D9AA32]" />
-                        Surat Jalan
+                        Preview SJ
                       </Button>
                       <Button
                         type="button"
@@ -704,7 +840,78 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
             )}
           </div>
 
-          <div className="space-y-3 md:hidden">
+          {state.salesQuotations.length > 0 && (
+            <div className="flex items-center justify-between gap-2 md:hidden px-1">
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={qtSelection.allVisibleSelected}
+                  indeterminate={qtSelection.someVisibleSelected}
+                  onChange={qtSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua Sales Quotation"
+                />
+                <span>Pilih Semua ({state.salesQuotations.length})</span>
+              </label>
+            </div>
+          )}
+
+          <BulkActionBar
+            selectedCount={qtSelection.selectedCount}
+            itemLabel="Quotation"
+            onClear={qtSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-qt-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: exportSelectedQts,
+              },
+              ...(canQuotation && selectedDraftQtIds.length > 0
+                ? [
+                    {
+                      id: 'send-qt-bulk',
+                      label: `Tandai Sent (${selectedDraftQtIds.length})`,
+                      variant: 'outline' as const,
+                      onClick: async () => {
+                        await erp.bulkUpdateQuotationStatuses(selectedDraftQtIds, 'Sent');
+                        qtSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+              ...(canQuotation && selectedRejectableQtIds.length > 0
+                ? [
+                    {
+                      id: 'reject-qt-bulk',
+                      label: `Tandai Rejected (${selectedRejectableQtIds.length})`,
+                      variant: 'outline' as const,
+                      onClick: async () => {
+                        await erp.bulkUpdateQuotationStatuses(selectedRejectableQtIds, 'Rejected');
+                        qtSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+              ...(canDelete
+                ? [
+                    {
+                      id: 'delete-qt-bulk',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: `Konfirmasi Hapus (${qtSelection.selectedCount})`,
+                      onClick: async () => {
+                        await erp.bulkDeleteQuotations(Array.from(qtSelection.selectedIds));
+                        qtSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
+          <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {state.salesQuotations.length === 0 ? (
               <Card>
                 <CardContent className="py-8 text-center text-xs text-slate-500">
@@ -713,15 +920,23 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
               </Card>
             ) : (
               state.salesQuotations.map((qt) => (
-                <Card key={`m_qt_${qt.id}`}>
+                <Card key={`m_qt_${qt.id}`} className={qtSelection.isSelected(qt.id) ? 'border-[#1B5E99] bg-[#F4F8FC]' : ''}>
                   <CardContent className="p-4 space-y-2.5 text-xs">
                     <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="font-mono font-bold text-[#0B1B3A] text-sm">
-                          {qt.quotationNumber}
-                        </div>
-                        <div className="text-[11px] text-slate-500">
-                          Berlaku s/d {qt.validUntil}
+                      <div className="flex items-start gap-2 min-w-0">
+                        <SelectCheckbox
+                          checked={qtSelection.isSelected(qt.id)}
+                          onChange={() => qtSelection.toggleOne(qt.id)}
+                          ariaLabel={`Pilih Quotation ${qt.quotationNumber}`}
+                          className="mt-0.5"
+                        />
+                        <div className="min-w-0">
+                          <div className="font-mono font-bold text-[#0B1B3A] text-sm">
+                            {qt.quotationNumber}
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            Berlaku s/d {qt.validUntil}
+                          </div>
                         </div>
                       </div>
                       <StatusLabel
@@ -749,7 +964,7 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                         type="button"
                         variant="outline"
                         size="sm"
-                        aria-label={`Cetak Quotation ${qt.quotationNumber}`}
+                        aria-label={`Cetak Preview Quotation ${qt.quotationNumber}`}
                         onClick={() => {
                           const cust = state.customers.find((c) => c.id === qt.customerId);
                           const wh = state.warehouses.find((w) => w.id === qt.warehouseId);
@@ -760,23 +975,7 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                         }}
                       >
                         <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                        Cetak
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          void exportSalesQuotationPdf(
-                            qt,
-                            state.settings,
-                            state.customers.find((c) => c.id === qt.customerId),
-                            state.warehouses.find((w) => w.id === qt.warehouseId)
-                          )
-                        }
-                      >
-                        <FileDown className="h-3.5 w-3.5 text-[#1B5E99]" />
-                        PDF
+                        Cetak Preview
                       </Button>
                       {canQuotation && qt.status === 'Draft' && (
                         <Button
@@ -838,10 +1037,18 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
           </div>
 
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200">
                   <tr>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={qtSelection.allVisibleSelected}
+                        indeterminate={qtSelection.someVisibleSelected}
+                        onChange={qtSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua Sales Quotation"
+                      />
+                    </th>
                     <th className="py-3 px-4 font-semibold">No. Quotation</th>
                     <th className="py-3 px-3 font-semibold">Buyer / Customer</th>
                     <th className="py-3 px-3 font-semibold">Gudang</th>
@@ -854,13 +1061,20 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                 <tbody className="divide-y divide-slate-100">
                   {state.salesQuotations.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-8 text-center text-slate-500">
+                      <td colSpan={8} className="py-8 text-center text-slate-500">
                         Belum ada data Quotation.
                       </td>
                     </tr>
                   ) : (
                     state.salesQuotations.map((qt) => (
-                      <tr key={qt.id} className="hover:bg-slate-50/70">
+                      <tr key={qt.id} className={qtSelection.isSelected(qt.id) ? 'bg-[#F0F6FC]' : 'hover:bg-slate-50/70'}>
+                        <td className="py-2.5 pl-4 pr-2">
+                          <SelectCheckbox
+                            checked={qtSelection.isSelected(qt.id)}
+                            onChange={() => qtSelection.toggleOne(qt.id)}
+                            ariaLabel={`Pilih Quotation ${qt.quotationNumber}`}
+                          />
+                        </td>
                         <td className="py-2.5 px-4">
                           <div className="font-mono font-semibold text-[#0B1B3A]">{qt.quotationNumber}</div>
                           {qt.convertedSoNumber && (
@@ -896,7 +1110,7 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                             type="button"
                             variant="outline"
                             size="sm"
-                            aria-label={`Cetak Quotation ${qt.quotationNumber}`}
+                            aria-label={`Cetak Preview Quotation ${qt.quotationNumber}`}
                             onClick={() => {
                               const cust = state.customers.find((c) => c.id === qt.customerId);
                               const wh = state.warehouses.find((w) => w.id === qt.warehouseId);
@@ -907,23 +1121,7 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                             }}
                           >
                             <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                            Cetak
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() =>
-                              void exportSalesQuotationPdf(
-                                qt,
-                                state.settings,
-                                state.customers.find((c) => c.id === qt.customerId),
-                                state.warehouses.find((w) => w.id === qt.warehouseId)
-                              )
-                            }
-                          >
-                            <FileDown className="h-3.5 w-3.5 text-[#1B5E99]" />
-                            PDF
+                            Cetak Preview
                           </Button>
                           {canQuotation && qt.status === 'Draft' && (
                             <Button
@@ -1042,7 +1240,7 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                   Belum ada harga kontrak khusus untuk buyer ini. Klik &ldquo;Tambah Item Kontrak&rdquo; untuk menambahkan.
                 </div>
               ) : (
-                <div className="space-y-2.5">
+                <div className="space-y-2.5 max-h-[440px] overflow-y-auto pr-1">
                   {contractDraftTiers.map((tier, idx) => (
                     <div
                       key={`tier_${idx}`}
@@ -1201,7 +1399,79 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
             )}
           </div>
 
-          <div className="space-y-3 md:hidden">
+          {salesReturns.length > 0 && (
+            <div className="flex items-center justify-between gap-2 md:hidden px-1">
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                <SelectCheckbox
+                  checked={retSelection.allVisibleSelected}
+                  indeterminate={retSelection.someVisibleSelected}
+                  onChange={retSelection.toggleAllVisible}
+                  ariaLabel="Pilih semua Retur Penjualan"
+                />
+                <span>Pilih Semua ({salesReturns.length})</span>
+              </label>
+            </div>
+          )}
+
+          <BulkActionBar
+            selectedCount={retSelection.selectedCount}
+            itemLabel="retur penjualan"
+            onClear={retSelection.clearSelection}
+            actions={[
+              {
+                id: 'export-sret-csv',
+                label: 'Export Terpilih CSV',
+                icon: <Download className="h-3.5 w-3.5" />,
+                variant: 'outline',
+                onClick: exportSelectedReturns,
+              },
+              ...(canInvoice && selectedPendingRetIds.length > 0
+                ? [
+                    {
+                      id: 'complete-sret-bulk',
+                      label: `Selesaikan (${selectedPendingRetIds.length})`,
+                      icon: <CheckCircle2 className="h-3.5 w-3.5" />,
+                      variant: 'accent' as const,
+                      onClick: async () => {
+                        await erp.bulkCompleteGoodsReturns(selectedPendingRetIds);
+                        retSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+              ...(canReturn && selectedPendingRetIds.length > 0
+                ? [
+                    {
+                      id: 'cancel-sret-bulk',
+                      label: `Batalkan (${selectedPendingRetIds.length})`,
+                      variant: 'outline' as const,
+                      onClick: async () => {
+                        await erp.bulkCancelGoodsReturns(selectedPendingRetIds);
+                        retSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+              ...(canDelete
+                ? [
+                    {
+                      id: 'delete-sret-bulk',
+                      label: 'Hapus Terpilih',
+                      icon: <Trash2 className="h-3.5 w-3.5" />,
+                      variant: 'destructive' as const,
+                      requiresConfirm: true,
+                      confirmLabel: `Konfirmasi Hapus (${retSelection.selectedCount})`,
+                      onClick: async () => {
+                        await erp.bulkDeleteGoodsReturns(Array.from(retSelection.selectedIds));
+                        retSelection.clearSelection();
+                      },
+                    },
+                  ]
+                : []),
+            ]}
+          />
+
+          <div className="space-y-3 md:hidden max-h-[540px] overflow-y-auto pr-1">
             {salesReturns.length === 0 ? (
               <Card>
                 <CardContent className="py-8 text-center text-xs text-slate-500">
@@ -1210,13 +1480,21 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
               </Card>
             ) : (
               salesReturns.map((ret) => (
-                <Card key={`m_sret_${ret.id}`}>
+                <Card key={`m_sret_${ret.id}`} className={retSelection.isSelected(ret.id) ? 'border-[#1B5E99] bg-[#F4F8FC]' : ''}>
                   <CardContent className="p-4 space-y-2.5 text-xs">
                     <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="font-mono font-bold text-[#0B1B3A]">{ret.returnNumber}</div>
-                        <div className="text-[11px] font-mono text-slate-500">
-                          Ref: {ret.referenceOrderNumber} · {ret.returnDate}
+                      <div className="flex items-start gap-2 min-w-0">
+                        <SelectCheckbox
+                          checked={retSelection.isSelected(ret.id)}
+                          onChange={() => retSelection.toggleOne(ret.id)}
+                          ariaLabel={`Pilih retur ${ret.returnNumber}`}
+                          className="mt-0.5"
+                        />
+                        <div className="min-w-0">
+                          <div className="font-mono font-bold text-[#0B1B3A]">{ret.returnNumber}</div>
+                          <div className="text-[11px] font-mono text-slate-500">
+                            Ref: {ret.referenceOrderNumber} · {ret.returnDate}
+                          </div>
                         </div>
                       </div>
                       <StatusLabel
@@ -1294,10 +1572,18 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
           </div>
 
           <Card className="hidden md:block">
-            <div className="overflow-x-auto">
+            <div className="max-h-[500px] overflow-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200">
                   <tr>
+                    <th className="py-3 pl-4 pr-2 w-10">
+                      <SelectCheckbox
+                        checked={retSelection.allVisibleSelected}
+                        indeterminate={retSelection.someVisibleSelected}
+                        onChange={retSelection.toggleAllVisible}
+                        ariaLabel="Pilih semua Retur Penjualan"
+                      />
+                    </th>
                     <th className="py-3 px-4 font-semibold">No. Retur</th>
                     <th className="py-3 px-3 font-semibold">Ref SO</th>
                     <th className="py-3 px-3 font-semibold">Buyer</th>
@@ -1310,13 +1596,20 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                 <tbody className="divide-y divide-slate-100">
                   {salesReturns.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-8 text-center text-slate-500">
+                      <td colSpan={8} className="py-8 text-center text-slate-500">
                         Belum ada dokumen retur penjualan.
                       </td>
                     </tr>
                   ) : (
                     salesReturns.map((ret) => (
-                      <tr key={ret.id} className="hover:bg-slate-50/70">
+                      <tr key={ret.id} className={retSelection.isSelected(ret.id) ? 'bg-[#F0F6FC]' : 'hover:bg-slate-50/70'}>
+                        <td className="py-2.5 pl-4 pr-2">
+                          <SelectCheckbox
+                            checked={retSelection.isSelected(ret.id)}
+                            onChange={() => retSelection.toggleOne(ret.id)}
+                            ariaLabel={`Pilih retur ${ret.returnNumber}`}
+                          />
+                        </td>
                         <td className="py-2.5 px-4 font-mono font-semibold text-[#0B1B3A]">
                           {ret.returnNumber}
                         </td>
@@ -2116,23 +2409,7 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                       }}
                     >
                       <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
-                      Cetak SO
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        void exportSalesOrderPdf(
-                          selectedSo,
-                          state.settings,
-                          state.customers.find((c) => c.id === selectedSo.customerId),
-                          state.warehouses.find((w) => w.id === selectedSo.warehouseId)
-                        )
-                      }
-                    >
-                      <FileDown className="h-3.5 w-3.5 text-[#1B5E99]" />
-                      PDF SO
+                      Preview SO
                     </Button>
                     <Button
                       type="button"
@@ -2156,24 +2433,8 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                         );
                       }}
                     >
-                      <Printer className="h-3.5 w-3.5 text-[#D9AA32]" />
-                      Cetak SJ
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        void exportSuratJalanPdf(
-                          selectedSo,
-                          state.settings,
-                          state.customers.find((c) => c.id === selectedSo.customerId),
-                          state.warehouses.find((w) => w.id === selectedSo.warehouseId)
-                        )
-                      }
-                    >
                       <Truck className="h-3.5 w-3.5 text-[#D9AA32]" />
-                      Surat Jalan
+                      Preview SJ
                     </Button>
                     <Button
                       type="button"
@@ -2185,49 +2446,31 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                       CSV SJ
                     </Button>
                     {selectedSoInvoice && (
-                      <>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() =>
-                            openPrintPreview(
-                              buildSalesInvoicePrintDoc(
-                                selectedSoInvoice,
-                                state.settings,
-                                selectedSoCustomer,
-                                selectedSo
-                              ),
-                              () =>
-                                exportSalesInvoicePdf(
-                                  selectedSoInvoice,
-                                  state.settings,
-                                  selectedSoCustomer,
-                                  selectedSo
-                                )
-                            )
-                          }
-                        >
-                          <Printer className="h-3.5 w-3.5 text-emerald-700" />
-                          Cetak Invoice
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() =>
-                            void exportSalesInvoicePdf(
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          openPrintPreview(
+                            buildSalesInvoicePrintDoc(
                               selectedSoInvoice,
                               state.settings,
                               selectedSoCustomer,
                               selectedSo
-                            )
-                          }
-                        >
-                          <Receipt className="h-3.5 w-3.5 text-emerald-700" />
-                          Invoice PDF
-                        </Button>
-                      </>
+                            ),
+                            () =>
+                              exportSalesInvoicePdf(
+                                selectedSoInvoice,
+                                state.settings,
+                                selectedSoCustomer,
+                                selectedSo
+                              )
+                          )
+                        }
+                      >
+                        <Receipt className="h-3.5 w-3.5 text-emerald-700" />
+                        Preview Invoice
+                      </Button>
                     )}
                   </div>
 
