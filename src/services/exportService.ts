@@ -161,14 +161,10 @@ function drawCorporateBanner(
     18.2
   );
 
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.8);
-  doc.setTextColor(245, 200, 90);
-  doc.text('DOKUMEN RESMI ERP B2B', pageWidth - margin, 8.8, { align: 'right' });
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6.8);
   doc.setTextColor(203, 213, 225);
-  doc.text(`Dicetak: ${new Date().toLocaleDateString('id-ID')}`, pageWidth - margin, 13.6, {
+  doc.text(`Dicetak: ${new Date().toLocaleDateString('id-ID')}`, pageWidth - margin, 8.8, {
     align: 'right',
   });
 

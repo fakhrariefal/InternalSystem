@@ -88,7 +88,6 @@ export function PrintableDocumentSheet({ data }: { data: PrintableDocumentData }
           </div>
         </div>
         <div className="print-doc-banner-badge">
-          <div className="print-doc-banner-kicker">DOKUMEN RESMI ERP B2B</div>
           <div className="print-doc-banner-date">Dicetak: {printedDateShort}</div>
         </div>
       </header>
@@ -284,7 +283,6 @@ export function PrintableDocumentSheet({ data }: { data: PrintableDocumentData }
             {data.company.npwp || '-'}
           </span>
           <span>Dicetak: {printedTimestamp}</span>
-          <span className="font-semibold text-slate-700">Dokumen Resmi ERP B2B</span>
         </div>
       </footer>
     </article>
