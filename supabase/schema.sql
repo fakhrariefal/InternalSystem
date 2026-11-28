@@ -1,15 +1,18 @@
 -- ============================================================================
--- DOMESTIQ HUB SYSTEM (PT DOMESTIQ HUB INDONESIA) — SUPABASE POSTGRESQL SCHEMA
--- Jalankan seluruh script ini di SQL Editor Supabase.
--- Mencakup: 24 Tabel ERP B2B, Relasi Foreign Key, Indexes, Trigger Auth -> Profiles,
--- Row Level Security (RLS) Multi-Tenant per Perusahaan & Role, dan Storage Bucket.
+-- DOMESTIQ HUB SYSTEM (PT DOMESTIQ HUB INDONESIA) — SUPABASE MIGRATION
+-- Path: supabase/migrations/20261128000001_init_erp_schema.sql
+-- Mencakup:
+--   1. Tabel companies, profiles, & company_members (8-Role RBAC ERP)
+--   2. Seluruh 22 tabel operasional, gudang, pengadaan, penjualan, & akuntansi
+--   3. Row Level Security (RLS) berbasis role & company_id di seluruh tabel
+--   4. Trigger otomatis Google OAuth & Auth -> pencocokan email member + Owner pertama
+--   5. Supabase Storage bucket 'erp-documents' beserta policy
 -- ============================================================================
 
--- 0. Extensions
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ============================================================================
--- 1. COMPANIES & PROFILES (MULTI-TENANT ROOT + USER RBAC)
+-- 1. COMPANIES, PROFILES & COMPANY MEMBERS (RBAC 8-ROLE + MULTI-TENANT)
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS public.companies (
@@ -55,6 +58,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_company_email_unique
   ON public.profiles (company_id, lower(email));
 CREATE INDEX IF NOT EXISTS idx_profiles_auth_user_id
   ON public.profiles (auth_user_id);
+
+CREATE TABLE IF NOT EXISTS public.company_members (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  user_id UUID UNIQUE REFERENCES auth.users(id) ON DELETE SET NULL,
+  profile_id UUID UNIQUE REFERENCES public.profiles(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'Viewer'
+    CHECK (role IN ('Direktur','Manager','Purchasing','Warehouse','Sales','Finance','Viewer','Angel Investor')),
+  department TEXT DEFAULT 'Umum',
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  photo_url TEXT DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_company_members_company_email_unique
+  ON public.company_members (company_id, lower(email));
+CREATE INDEX IF NOT EXISTS idx_company_members_user_id
+  ON public.company_members (user_id);
+CREATE INDEX IF NOT EXISTS idx_company_members_email_lower
+  ON public.company_members (lower(email));
 
 -- ============================================================================
 -- 2. MASTER DATA TABLES
@@ -573,10 +599,20 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT company_id
-  FROM public.profiles
-  WHERE auth_user_id = auth.uid() AND active = TRUE
-  LIMIT 1;
+  SELECT COALESCE(
+    (
+      SELECT cm.company_id
+      FROM public.company_members cm
+      WHERE cm.user_id = auth.uid() AND cm.active = TRUE
+      LIMIT 1
+    ),
+    (
+      SELECT p.company_id
+      FROM public.profiles p
+      WHERE p.auth_user_id = auth.uid() AND p.active = TRUE
+      LIMIT 1
+    )
+  );
 $$;
 
 CREATE OR REPLACE FUNCTION public.current_user_role()
@@ -586,18 +622,96 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT role
-  FROM public.profiles
-  WHERE auth_user_id = auth.uid() AND active = TRUE
-  LIMIT 1;
+  SELECT COALESCE(
+    (
+      SELECT cm.role
+      FROM public.company_members cm
+      WHERE cm.user_id = auth.uid() AND cm.active = TRUE
+      LIMIT 1
+    ),
+    (
+      SELECT p.role
+      FROM public.profiles p
+      WHERE p.auth_user_id = auth.uid() AND p.active = TRUE
+      LIMIT 1
+    )
+  );
 $$;
 
 -- ============================================================================
--- 9. TRIGGER OTOMATIS SAAT USER BARU MENDAFTAR VIA SUPABASE AUTH
---    - Jika email sudah didaftarkan oleh Direktur di tabel profiles sebelumnya,
---      akun auth otomatis terhubung ke company_id & role yang sudah disiapkan.
---    - Jika pendaftar baru membuat workspace perusahaan baru, otomatis dibuatkan
---      row di public.companies dan dijadikan Direktur perusahaan tersebut.
+-- 9. SINKRONISASI PROFILES <-> COMPANY_MEMBERS (SAAT DIREKTUR TAMBAH/UBAH KARYAWAN)
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.sync_profile_to_company_member()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    DELETE FROM public.company_members WHERE profile_id = OLD.id;
+    RETURN OLD;
+  END IF;
+
+  IF pg_trigger_depth() > 1 THEN
+    RETURN NEW;
+  END IF;
+
+  INSERT INTO public.company_members (
+    company_id,
+    user_id,
+    profile_id,
+    email,
+    display_name,
+    role,
+    department,
+    active,
+    photo_url,
+    created_at,
+    updated_at
+  ) VALUES (
+    NEW.company_id,
+    NEW.auth_user_id,
+    NEW.id,
+    lower(trim(NEW.email)),
+    NEW.display_name,
+    NEW.role,
+    COALESCE(NEW.department, 'Umum'),
+    NEW.active,
+    COALESCE(NEW.photo_url, ''),
+    COALESCE(NEW.created_at, NOW()),
+    COALESCE(NEW.updated_at, NOW())
+  )
+  ON CONFLICT (profile_id) DO UPDATE SET
+    company_id = EXCLUDED.company_id,
+    user_id = COALESCE(EXCLUDED.user_id, public.company_members.user_id),
+    email = EXCLUDED.email,
+    display_name = EXCLUDED.display_name,
+    role = EXCLUDED.role,
+    department = EXCLUDED.department,
+    active = EXCLUDED.active,
+    photo_url = EXCLUDED.photo_url,
+    updated_at = NOW();
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_sync_profile_to_company_member ON public.profiles;
+CREATE TRIGGER trg_sync_profile_to_company_member
+  AFTER INSERT OR UPDATE OR DELETE ON public.profiles
+  FOR EACH ROW
+  EXECUTE FUNCTION public.sync_profile_to_company_member();
+
+-- ============================================================================
+-- 10. TRIGGER OTOMATIS SAAT LOGIN GOOGLE OAUTH / REGISTER SUPABASE AUTH
+--     1. Cocokkan email Google user dengan tabel company_members / profiles
+--        yang sudah didaftarkan Direktur, lalu hubungkan user_id otomatis.
+--     2. Jika company_members & profiles masih kosong total (belum ada user),
+--        user pertama otomatis dijadikan Direktur (role tertinggi / Owner).
+--     3. Jika pendaftar baru mendaftarkan workspace perusahaan baru,
+--        otomatis dibuatkan company & dijadikan Direktur workspace tsb.
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.handle_new_user()
@@ -611,8 +725,11 @@ DECLARE
   v_display_name TEXT;
   v_photo_url TEXT;
   v_company_name TEXT;
-  v_invited_id UUID;
+  v_member_rec RECORD;
+  v_profile_rec RECORD;
   v_company_id UUID;
+  v_profile_id UUID;
+  v_has_any_members BOOLEAN;
 BEGIN
   v_email := lower(trim(COALESCE(NEW.email, '')));
   v_display_name := NULLIF(
@@ -624,43 +741,125 @@ BEGIN
   END IF;
   v_photo_url := COALESCE(NEW.raw_user_meta_data->>'avatar_url', NEW.raw_user_meta_data->>'picture', '');
 
-  -- Cek apakah user sudah pernah dibuatkan profil undangan oleh Direktur sebelumnya
-  SELECT id, company_id
-  INTO v_invited_id, v_company_id
+  -- 1. Cocokkan email Google / Auth dengan data karyawan yang sudah didaftarkan di company_members
+  SELECT id, company_id, profile_id, role, department, active, display_name, photo_url
+  INTO v_member_rec
+  FROM public.company_members
+  WHERE lower(email) = v_email
+    AND (user_id IS NULL OR user_id = NEW.id)
+  ORDER BY (user_id IS NULL) DESC, created_at DESC
+  LIMIT 1;
+
+  IF v_member_rec.id IS NOT NULL THEN
+    -- Pastikan row profile ada & terhubung ke auth_user_id
+    IF v_member_rec.profile_id IS NOT NULL THEN
+      UPDATE public.profiles
+      SET
+        auth_user_id = NEW.id,
+        display_name = COALESCE(NULLIF(display_name, ''), v_display_name),
+        photo_url = CASE WHEN COALESCE(photo_url, '') = '' THEN left(v_photo_url, 512) ELSE photo_url END,
+        updated_at = NOW()
+      WHERE id = v_member_rec.profile_id
+      RETURNING id INTO v_profile_id;
+    ELSE
+      INSERT INTO public.profiles (
+        auth_user_id,
+        company_id,
+        email,
+        display_name,
+        role,
+        department,
+        active,
+        photo_url
+      ) VALUES (
+        NEW.id,
+        v_member_rec.company_id,
+        v_email,
+        COALESCE(NULLIF(v_member_rec.display_name, ''), left(v_display_name, 120)),
+        v_member_rec.role,
+        COALESCE(v_member_rec.department, 'Umum'),
+        v_member_rec.active,
+        CASE WHEN COALESCE(v_member_rec.photo_url, '') = '' THEN left(v_photo_url, 512) ELSE v_member_rec.photo_url END
+      )
+      ON CONFLICT (auth_user_id) DO UPDATE SET
+        updated_at = NOW()
+      RETURNING id INTO v_profile_id;
+    END IF;
+
+    UPDATE public.company_members
+    SET
+      user_id = NEW.id,
+      profile_id = COALESCE(profile_id, v_profile_id),
+      display_name = COALESCE(NULLIF(display_name, ''), left(v_display_name, 120)),
+      photo_url = CASE WHEN COALESCE(photo_url, '') = '' THEN left(v_photo_url, 512) ELSE photo_url END,
+      updated_at = NOW()
+    WHERE id = v_member_rec.id;
+
+    RETURN NEW;
+  END IF;
+
+  -- 2. Fallback cek jika pernah dibuatkan undangan di tabel profiles sebelum company_members ada
+  SELECT id, company_id, role, department, active, display_name, photo_url
+  INTO v_profile_rec
   FROM public.profiles
   WHERE lower(email) = v_email AND auth_user_id IS NULL
   ORDER BY created_at DESC
   LIMIT 1;
 
-  IF v_invited_id IS NOT NULL THEN
+  IF v_profile_rec.id IS NOT NULL THEN
     UPDATE public.profiles
     SET
       auth_user_id = NEW.id,
-      display_name = COALESCE(NULLIF(display_name, ''), v_display_name),
-      photo_url = CASE WHEN COALESCE(photo_url, '') = '' THEN v_photo_url ELSE photo_url END,
+      display_name = COALESCE(NULLIF(display_name, ''), left(v_display_name, 120)),
+      photo_url = CASE WHEN COALESCE(photo_url, '') = '' THEN left(v_photo_url, 512) ELSE photo_url END,
       updated_at = NOW()
-    WHERE id = v_invited_id;
+    WHERE id = v_profile_rec.id;
     RETURN NEW;
   END IF;
 
-  -- Jika belum ada profil: buat company workspace baru agar terisolasi multi-tenant
+  -- 3. Cek apakah tabel company_members & profiles masih kosong sama sekali
+  SELECT (
+    EXISTS (SELECT 1 FROM public.company_members LIMIT 1)
+    OR EXISTS (SELECT 1 FROM public.profiles LIMIT 1)
+  ) INTO v_has_any_members;
+
   v_company_name := NULLIF(trim(COALESCE(NEW.raw_user_meta_data->>'company_name', '')), '');
   IF v_company_name IS NULL THEN
     v_company_name := 'PT Domestiq Hub Indonesia';
   END IF;
 
-  INSERT INTO public.companies (
-    company_name,
-    tagline,
-    email,
-    initial_seed_completed
-  ) VALUES (
-    v_company_name,
-    'General Supplier ERP',
-    v_email,
-    FALSE
-  )
-  RETURNING id INTO v_company_id;
+  IF NOT v_has_any_members THEN
+    -- User pertama yang login/mendaftar otomatis menjadi Owner / Direktur tertinggi
+    SELECT id INTO v_company_id FROM public.companies ORDER BY created_at ASC LIMIT 1;
+    IF v_company_id IS NULL THEN
+      INSERT INTO public.companies (
+        company_name,
+        tagline,
+        email,
+        initial_seed_completed
+      ) VALUES (
+        v_company_name,
+        'General Supplier ERP',
+        v_email,
+        FALSE
+      )
+      RETURNING id INTO v_company_id;
+    END IF;
+  ELSE
+    -- Workspace terisolasi multi-tenant untuk pendaftar perusahaan baru
+    INSERT INTO public.companies (
+      company_name,
+      tagline,
+      email,
+      initial_seed_completed
+    ) VALUES (
+      v_company_name,
+      'General Supplier ERP',
+      v_email,
+      FALSE
+    )
+    RETURNING id INTO v_company_id;
+  END IF;
 
   INSERT INTO public.profiles (
     auth_user_id,
@@ -681,7 +880,8 @@ BEGIN
     TRUE,
     left(v_photo_url, 512)
   )
-  ON CONFLICT (auth_user_id) DO NOTHING;
+  ON CONFLICT (auth_user_id) DO NOTHING
+  RETURNING id INTO v_profile_id;
 
   RETURN NEW;
 END;
@@ -694,11 +894,12 @@ CREATE TRIGGER on_auth_user_created
   EXECUTE FUNCTION public.handle_new_user();
 
 -- ============================================================================
--- 10. ENABLE ROW LEVEL SECURITY (RLS) & POLICIES DI SELURUH TABEL
+-- 11. ENABLE ROW LEVEL SECURITY (RLS) & ROLE-BASED POLICIES DI SEMUA TABEL
 -- ============================================================================
 
 ALTER TABLE public.companies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.company_members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.warehouses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.uoms ENABLE ROW LEVEL SECURITY;
@@ -734,7 +935,7 @@ CREATE POLICY companies_update_admin ON public.companies
   USING (id = public.current_company_id() AND public.current_user_role() IN ('Direktur', 'Manager'))
   WITH CHECK (id = public.current_company_id() AND public.current_user_role() IN ('Direktur', 'Manager'));
 
--- Policy: profiles
+-- Policy: profiles (own profile or Direktur/Manager view, Direktur manages CRUD)
 DROP POLICY IF EXISTS profiles_select_own_or_admin ON public.profiles;
 CREATE POLICY profiles_select_own_or_admin ON public.profiles
   FOR SELECT TO authenticated
@@ -775,7 +976,49 @@ CREATE POLICY profiles_delete_director ON public.profiles
     AND (auth_user_id IS NULL OR auth_user_id <> auth.uid())
   );
 
--- Helper macro via DO block untuk seluruh tabel tenant-scoped (SELECT, INSERT, UPDATE, DELETE)
+-- Policy: company_members (matching profiles RBAC)
+DROP POLICY IF EXISTS company_members_select_own_or_admin ON public.company_members;
+CREATE POLICY company_members_select_own_or_admin ON public.company_members
+  FOR SELECT TO authenticated
+  USING (
+    user_id = auth.uid()
+    OR lower(email) = lower(COALESCE(auth.jwt()->>'email', ''))
+    OR (
+      company_id = public.current_company_id()
+      AND public.current_user_role() IN ('Direktur', 'Manager')
+    )
+  );
+
+DROP POLICY IF EXISTS company_members_insert_director ON public.company_members;
+CREATE POLICY company_members_insert_director ON public.company_members
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    company_id = public.current_company_id()
+    AND public.current_user_role() = 'Direktur'
+  );
+
+DROP POLICY IF EXISTS company_members_update_director ON public.company_members;
+CREATE POLICY company_members_update_director ON public.company_members
+  FOR UPDATE TO authenticated
+  USING (
+    company_id = public.current_company_id()
+    AND public.current_user_role() = 'Direktur'
+  )
+  WITH CHECK (
+    company_id = public.current_company_id()
+    AND public.current_user_role() = 'Direktur'
+  );
+
+DROP POLICY IF EXISTS company_members_delete_director ON public.company_members;
+CREATE POLICY company_members_delete_director ON public.company_members
+  FOR DELETE TO authenticated
+  USING (
+    company_id = public.current_company_id()
+    AND public.current_user_role() = 'Direktur'
+    AND (user_id IS NULL OR user_id <> auth.uid())
+  );
+
+-- Policy: Tabel operasional & master (Viewer & Angel Investor bersifat read-only, DELETE khusus Direktur)
 DO $$
 DECLARE
   tbl TEXT;
@@ -829,7 +1072,7 @@ BEGIN
   END LOOP;
 END $$;
 
--- Policy: audit_logs (semua user aktif di company bisa membaca & menambah log, hanya Direktur bisa hapus)
+-- Policy: audit_logs
 DROP POLICY IF EXISTS audit_logs_select_tenant ON public.audit_logs;
 CREATE POLICY audit_logs_select_tenant ON public.audit_logs
   FOR SELECT TO authenticated
@@ -845,7 +1088,7 @@ CREATE POLICY audit_logs_delete_director ON public.audit_logs
   FOR DELETE TO authenticated
   USING (company_id = public.current_company_id() AND public.current_user_role() = 'Direktur');
 
--- Policy: notifications (semua user aktif di company bisa baca & tandai dibaca, Direktur bisa hapus)
+-- Policy: notifications
 DROP POLICY IF EXISTS notifications_select_tenant ON public.notifications;
 CREATE POLICY notifications_select_tenant ON public.notifications
   FOR SELECT TO authenticated
@@ -868,7 +1111,7 @@ CREATE POLICY notifications_delete_director ON public.notifications
   USING (company_id = public.current_company_id() AND public.current_user_role() = 'Direktur');
 
 -- ============================================================================
--- 11. SUPABASE STORAGE BUCKET UNTUK DOKUMEN PARTNER, PO, POD & PRODUK
+-- 12. SUPABASE STORAGE BUCKET UNTUK DOKUMEN PARTNER, PO, POD & PRODUK
 -- ============================================================================
 
 INSERT INTO storage.buckets (id, name, public)

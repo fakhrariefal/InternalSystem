@@ -1030,27 +1030,64 @@ export async function ensureAuthenticatedUserProfile(user: SupabaseUser): Promis
       '',
   });
 
-  const fetchProfile = async () =>
-    supabase.from('profiles').select('*').eq('auth_user_id', user.id).maybeSingle();
+  const fetchProfileAndMember = async () => {
+    const [profileRes, memberRes] = await Promise.all([
+      supabase.from('profiles').select('*').eq('auth_user_id', user.id).maybeSingle(),
+      supabase.from('company_members').select('*').eq('user_id', user.id).maybeSingle(),
+    ]);
+    throwIfError(profileRes.error, 'profiles.select');
+    throwIfError(memberRes.error, 'company_members.select');
+    return { profileRow: profileRes.data, memberRow: memberRes.data };
+  };
 
-  let { data, error } = await fetchProfile();
-  throwIfError(error, 'profiles.select');
+  let { profileRow, memberRow } = await fetchProfileAndMember();
 
-  if (!data) {
-    // Micro-wait in case trigger just ran concurrently
-    await new Promise((r) => setTimeout(r, 350));
-    const retry = await fetchProfile();
-    throwIfError(retry.error, 'profiles.select.retry');
-    data = retry.data;
+  if (!profileRow && !memberRow) {
+    // Micro-wait in case on_auth_user_created trigger just ran concurrently
+    await new Promise((r) => setTimeout(r, 400));
+    const retry = await fetchProfileAndMember();
+    profileRow = retry.profileRow;
+    memberRow = retry.memberRow;
   }
 
-  if (!data) {
+  if (!profileRow && !memberRow) {
     throw new Error(
-      'Profil pengguna belum ditemukan di tabel public.profiles. Pastikan Anda telah menjalankan script SQL schema & trigger Supabase terlebih dahulu.'
+      'Profil & keanggotaan perusahaan belum ditemukan di tabel profiles / company_members. Pastikan migrasi SQL Supabase sudah dijalankan.'
     );
   }
 
-  const profile = mapProfileRow(data as Record<string, unknown>);
+  const baseRow = (profileRow || memberRow) as Record<string, unknown>;
+  const profile = profileRow
+    ? mapProfileRow(baseRow)
+    : {
+        uid: str(baseRow.profile_id || baseRow.id),
+        authUserId: user.id,
+        companyId: str(baseRow.company_id),
+        email: str(baseRow.email),
+        displayName: str(baseRow.display_name),
+        role: normalizeUserRole(str(baseRow.role)),
+        department: str(baseRow.department, 'Umum'),
+        active: baseRow.active !== false,
+        photoURL: str(baseRow.photo_url),
+        createdAt: iso(baseRow.created_at),
+        updatedAt: iso(baseRow.updated_at),
+      };
+
+  // Authoritative role & active check from company_members when available
+  if (memberRow) {
+    const member = memberRow as Record<string, unknown>;
+    return {
+      ...profile,
+      companyId: str(member.company_id) || profile.companyId,
+      role: normalizeUserRole(str(member.role)),
+      active: member.active !== false && profile.active,
+      department: str(member.department) || profile.department,
+      email: profile.email || emailLower,
+      displayName: profile.displayName || str(member.display_name) || displayName,
+      photoURL: profile.photoURL || str(member.photo_url) || photoURL,
+    };
+  }
+
   return {
     ...profile,
     email: profile.email || emailLower,
