@@ -43,6 +43,21 @@ import {
   validateSupplierForPayment,
   validateSupplierForPurchaseOrder,
 } from '../models/erpLogic';
+import {
+  buildNextSequentialDocNumber,
+  computeDueDateFromPaymentTerm,
+  computeValidityPeriodLabel,
+  ensureMandatoryPoTermsNote,
+  getDefaultPoDeliveryLocation,
+  getDefaultPoIncoterm,
+  getDefaultQuotationTerms,
+  getDefaultSalesDeliveryLocation,
+  getDefaultSalesIncoterm,
+  getDefaultSalesOrderTerms,
+  inheritTermsFromQuotation,
+  mapCustomerToPaymentTerm,
+  mapSupplierToPaymentTerm,
+} from '../models/orderTerms';
 import { canAccessModule, hasPermission } from '../models/rbac';
 import { createEmptyErpState, createInitialSeedState } from '../models/seedData';
 import {
@@ -1648,6 +1663,11 @@ export function useErpController() {
       currency: CurrencyCode;
       expectedDate: string;
       notes: string;
+      paymentTerm?: string;
+      paymentTermCustom?: string;
+      incoterm?: string;
+      deliveryLocation?: string;
+      termsAndConditions?: string;
       items: Array<{
         productId: string;
         qty: number;
@@ -1685,8 +1705,13 @@ export function useErpController() {
           toast.error('Tuliskan nama / keterangan jasa pada baris Service.');
           return false;
         }
-        const qty = Math.max(1, Number(it.qty));
-        const price = Math.max(0, Number(it.unitPrice));
+        const rawQty = Number(it.qty);
+        if (!Number.isFinite(rawQty) || rawQty < 1) {
+          toast.error('Qty setiap item/jasa harus minimal 1.');
+          return false;
+        }
+        const qty = Math.round(rawQty);
+        const price = Math.max(0, Number(it.unitPrice) || 0);
         orderItems.push({
           productId: prod?.id || sanitizeString(it.productId, 128) || makeId('svc'),
           sku: prod?.sku || sanitizeString(it.sku, 40) || 'SRV-MANUAL',
@@ -1703,6 +1728,30 @@ export function useErpController() {
         toast.error('Minimal 1 item valid harus dipilih.');
         return false;
       }
+
+      const vendorDefaultTerm = mapSupplierToPaymentTerm(supplier);
+      const paymentTerm = sanitizeString(input.paymentTerm || vendorDefaultTerm.paymentTerm, 80);
+      const paymentTermCustom =
+        paymentTerm === 'Custom'
+          ? sanitizeString(input.paymentTermCustom || vendorDefaultTerm.paymentTermCustom, 120)
+          : '';
+      if (paymentTerm === 'Custom' && !paymentTermCustom) {
+        toast.error('Isi keterangan Payment Term Custom.');
+        return false;
+      }
+      const incoterm = sanitizeString(input.incoterm || getDefaultPoIncoterm(supplier), 80);
+      const deliveryLocation = sanitizeString(
+        input.deliveryLocation || getDefaultPoDeliveryLocation(incoterm, supplier, warehouse, state.settings),
+        300
+      );
+      if (!deliveryLocation) {
+        toast.error('Lokasi pengiriman pada Terms & Conditions wajib diisi.');
+        return false;
+      }
+      const termsAndConditions = sanitizeString(
+        ensureMandatoryPoTermsNote(input.termsAndConditions),
+        2000
+      );
 
       const totals = calculateOrderTotals(orderItems, getEffectiveTaxRatePercent(state.settings));
       const totalAmountIdr = convertToIdr(
@@ -1730,7 +1779,11 @@ export function useErpController() {
 
       const now = new Date().toISOString();
       const poId = makeId('po');
-      const poNumber = `PO-2026-${String(state.purchaseOrders.length + 92).padStart(4, '0')}`;
+      const poNumber = buildNextSequentialDocNumber(
+        'PO-2026-',
+        state.purchaseOrders.map((p) => p.poNumber),
+        92
+      );
       const status: PoStatus = input.submitImmediately ? 'Submitted' : 'Draft';
       const approvalTierRequired: 'Manager' | 'Direktur' = requiresDirectorApproval(
         totalAmountIdr,
@@ -1762,6 +1815,11 @@ export function useErpController() {
         totalAmount: totals.totalAmount,
         expectedDate: input.expectedDate,
         notes: sanitizeString(input.notes, BLUEPRINT_CONSTRAINTS.NOTES_MAX_LENGTH),
+        paymentTerm,
+        ...(paymentTermCustom ? { paymentTermCustom } : {}),
+        incoterm,
+        deliveryLocation,
+        termsAndConditions,
         attachmentUrls,
         approvalTierRequired,
         createdBy: currentUser.uid,
@@ -1785,7 +1843,7 @@ export function useErpController() {
       toast.success(`${poNumber} berhasil dibuat (${status}).`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.products, state.purchaseOrders.length, state.settings, state.suppliers, state.warehouses]
+    [authMode, currentUser, recordAudit, state.products, state.purchaseOrders, state.settings, state.suppliers, state.warehouses]
   );
 
   const transitionPurchaseOrder = useCallback(
@@ -2399,6 +2457,13 @@ export function useErpController() {
       currency: CurrencyCode;
       dueDate: string;
       notes: string;
+      quotationId?: string;
+      quotationNumber?: string;
+      paymentTerm?: string;
+      paymentTermCustom?: string;
+      incoterm?: string;
+      deliveryLocation?: string;
+      termsAndConditions?: string;
       items: Array<{
         productId: string;
         qty: number;
@@ -2428,8 +2493,13 @@ export function useErpController() {
           toast.error('Tuliskan nama / keterangan jasa pada baris Service.');
           return false;
         }
-        const qty = Math.max(1, Number(it.qty));
-        const price = Math.max(0, Number(it.unitPrice));
+        const rawQty = Number(it.qty);
+        if (!Number.isFinite(rawQty) || rawQty < 1) {
+          toast.error('Qty setiap item/jasa harus minimal 1.');
+          return false;
+        }
+        const qty = Math.round(rawQty);
+        const price = Math.max(0, Number(it.unitPrice) || 0);
         orderItems.push({
           productId: prod?.id || sanitizeString(it.productId, 128) || makeId('svc'),
           sku: prod?.sku || sanitizeString(it.sku, 40) || 'SRV-MANUAL',
@@ -2446,6 +2516,30 @@ export function useErpController() {
         toast.error('Minimal 1 item valid harus dipilih.');
         return false;
       }
+
+      const defaultBuyerTerm = mapCustomerToPaymentTerm(customer);
+      const paymentTerm = sanitizeString(input.paymentTerm || defaultBuyerTerm.paymentTerm, 80);
+      const paymentTermCustom =
+        paymentTerm === 'Custom'
+          ? sanitizeString(input.paymentTermCustom || defaultBuyerTerm.paymentTermCustom, 120)
+          : '';
+      if (paymentTerm === 'Custom' && !paymentTermCustom) {
+        toast.error('Isi keterangan Payment Term Custom.');
+        return false;
+      }
+      const incoterm = sanitizeString(input.incoterm || getDefaultSalesIncoterm(), 80);
+      const deliveryLocation = sanitizeString(
+        input.deliveryLocation || getDefaultSalesDeliveryLocation(incoterm, customer, warehouse),
+        300
+      );
+      if (!deliveryLocation) {
+        toast.error('Lokasi pengiriman pada Terms & Conditions wajib diisi.');
+        return false;
+      }
+      const termsAndConditions = sanitizeString(
+        input.termsAndConditions || getDefaultSalesOrderTerms(),
+        2000
+      );
 
       const stockCheck = checkSoStockAvailability(orderItems, warehouse.id, state.products);
       if (input.confirmImmediately && !stockCheck.sufficient) {
@@ -2476,7 +2570,11 @@ export function useErpController() {
 
       const now = new Date().toISOString();
       const soId = makeId('so');
-      const soNumber = `SO-2026-${String(state.salesOrders.length + 160).padStart(4, '0')}`;
+      const soNumber = buildNextSequentialDocNumber(
+        'SO-2026-',
+        state.salesOrders.map((s) => s.soNumber),
+        160
+      );
       const status: SoStatus = input.confirmImmediately ? 'Confirmed' : 'Draft';
 
       const newSo: SalesOrder = {
@@ -2493,7 +2591,14 @@ export function useErpController() {
         taxAmount: totals.taxAmount,
         totalAmount: totals.totalAmount,
         dueDate: input.dueDate,
+        ...(input.quotationId ? { quotationId: sanitizeString(input.quotationId, 128) } : {}),
+        ...(input.quotationNumber ? { quotationNumber: sanitizeString(input.quotationNumber, 48) } : {}),
         notes: sanitizeString(input.notes, BLUEPRINT_CONSTRAINTS.NOTES_MAX_LENGTH),
+        paymentTerm,
+        ...(paymentTermCustom ? { paymentTermCustom } : {}),
+        incoterm,
+        deliveryLocation,
+        termsAndConditions,
         createdBy: currentUser.uid,
         createdByName: currentUser.displayName,
         createdAt: now,
@@ -2508,7 +2613,7 @@ export function useErpController() {
       toast.success(`${soNumber} berhasil dibuat (${status}).`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.customers, state.invoices, state.products, state.salesOrders.length, state.settings, state.warehouses]
+    [authMode, currentUser, recordAudit, state.customers, state.invoices, state.products, state.salesOrders, state.settings, state.warehouses]
   );
 
   const transitionSalesOrder = useCallback(
@@ -3500,6 +3605,13 @@ export function useErpController() {
       warehouseId: string;
       currency: CurrencyCode;
       validUntil: string;
+      validityPeriod?: string;
+      leadTime?: string;
+      paymentTerm?: string;
+      paymentTermCustom?: string;
+      incoterm?: string;
+      deliveryLocation?: string;
+      termsAndConditions?: string;
       notes: string;
       items: Array<{
         productId: string;
@@ -3532,8 +3644,13 @@ export function useErpController() {
           toast.error('Tuliskan nama / keterangan jasa pada baris Service.');
           return false;
         }
-        const qty = Math.max(1, Number(it.qty));
-        const price = Math.max(0, Number(it.unitPrice));
+        const rawQty = Number(it.qty);
+        if (!Number.isFinite(rawQty) || rawQty < 1) {
+          toast.error('Qty setiap item/jasa harus minimal 1.');
+          return false;
+        }
+        const qty = Math.round(rawQty);
+        const price = Math.max(0, Number(it.unitPrice) || 0);
         orderItems.push({
           productId: prod?.id || sanitizeString(it.productId, 128) || makeId('svc'),
           sku: prod?.sku || sanitizeString(it.sku, 40) || 'SRV-MANUAL',
@@ -3550,13 +3667,49 @@ export function useErpController() {
         toast.error('Minimal 1 item valid harus dipilih.');
         return false;
       }
-      const totals = calculateOrderTotals(orderItems, getEffectiveTaxRatePercent(state.settings));
+
+      const defaultBuyerTerm = mapCustomerToPaymentTerm(customer);
+      const paymentTerm = sanitizeString(input.paymentTerm || defaultBuyerTerm.paymentTerm, 80);
+      const paymentTermCustom =
+        paymentTerm === 'Custom'
+          ? sanitizeString(input.paymentTermCustom || defaultBuyerTerm.paymentTermCustom, 120)
+          : '';
+      if (paymentTerm === 'Custom' && !paymentTermCustom) {
+        toast.error('Isi keterangan Payment Term Custom.');
+        return false;
+      }
+      const incoterm = sanitizeString(input.incoterm || getDefaultSalesIncoterm(), 80);
+      const deliveryLocation = sanitizeString(
+        input.deliveryLocation || getDefaultSalesDeliveryLocation(incoterm, customer, warehouse),
+        300
+      );
+      if (!deliveryLocation) {
+        toast.error('Lokasi pengiriman pada Terms & Conditions wajib diisi.');
+        return false;
+      }
+
       const now = new Date().toISOString();
+      const validUntil = sanitizeString(input.validUntil, 32) || now.slice(0, 10);
+      const validityPeriod = sanitizeString(
+        input.validityPeriod || computeValidityPeriodLabel(now.slice(0, 10), validUntil),
+        80
+      );
+      const leadTime = sanitizeString(input.leadTime || '3-5 Hari Kerja setelah PO diterima', 80);
+      const termsAndConditions = sanitizeString(
+        input.termsAndConditions || getDefaultQuotationTerms(),
+        2000
+      );
+
+      const totals = calculateOrderTotals(orderItems, getEffectiveTaxRatePercent(state.settings));
       const qtId = input.isNew ? makeId('qt') : input.id || makeId('qt');
       const existing = state.salesQuotations.find((q) => q.id === qtId);
       const quotationNumber =
         existing?.quotationNumber ||
-        `QTN-2026-${String(state.salesQuotations.length + 1).padStart(4, '0')}`;
+        buildNextSequentialDocNumber(
+          'QTN-2026-',
+          state.salesQuotations.map((q) => q.quotationNumber),
+          1
+        );
       const status: QuotationStatus = input.sendImmediately
         ? 'Sent'
         : existing?.status || 'Draft';
@@ -3574,7 +3727,14 @@ export function useErpController() {
         subtotal: totals.subtotal,
         taxAmount: totals.taxAmount,
         totalAmount: totals.totalAmount,
-        validUntil: sanitizeString(input.validUntil, 32) || now.slice(0, 10),
+        validUntil,
+        validityPeriod,
+        leadTime,
+        paymentTerm,
+        ...(paymentTermCustom ? { paymentTermCustom } : {}),
+        incoterm,
+        deliveryLocation,
+        termsAndConditions,
         notes: sanitizeString(input.notes, BLUEPRINT_CONSTRAINTS.NOTES_MAX_LENGTH),
         createdBy: existing?.createdBy || currentUser.uid,
         createdByName: existing?.createdByName || currentUser.displayName,
@@ -3667,10 +3827,16 @@ export function useErpController() {
 
       const now = new Date().toISOString();
       const soId = makeId('so');
-      const soNumber = `SO-2026-${String(state.salesOrders.length + 160).padStart(4, '0')}`;
-      const dueDate = new Date(Date.now() + (customer.paymentTermDays || 30) * 86_400_000)
-        .toISOString()
-        .slice(0, 10);
+      const soNumber = buildNextSequentialDocNumber(
+        'SO-2026-',
+        state.salesOrders.map((s) => s.soNumber),
+        160
+      );
+      const inheritedTerms = inheritTermsFromQuotation(qt, customer, warehouse);
+      const dueDate = computeDueDateFromPaymentTerm(
+        inheritedTerms.paymentTerm,
+        inheritedTerms.paymentTermCustom
+      );
 
       const newSo: SalesOrder = {
         id: soId,
@@ -3692,6 +3858,13 @@ export function useErpController() {
           `Konversi dari ${qt.quotationNumber}${qt.notes ? ` — ${qt.notes}` : ''}`,
           BLUEPRINT_CONSTRAINTS.NOTES_MAX_LENGTH
         ),
+        paymentTerm: inheritedTerms.paymentTerm,
+        ...(inheritedTerms.paymentTermCustom
+          ? { paymentTermCustom: inheritedTerms.paymentTermCustom }
+          : {}),
+        incoterm: inheritedTerms.incoterm,
+        deliveryLocation: sanitizeString(inheritedTerms.deliveryLocation, 300),
+        termsAndConditions: sanitizeString(inheritedTerms.termsAndConditions, 2000),
         createdBy: currentUser.uid,
         createdByName: currentUser.displayName,
         createdAt: now,
@@ -3733,7 +3906,7 @@ export function useErpController() {
       toast.success(`${qt.quotationNumber} berhasil dikonversi menjadi ${soNumber} (Draft).`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.customers, state.invoices, state.salesOrders.length, state.salesQuotations, state.settings.defaultExchangeRateUsdIdr, state.warehouses]
+    [authMode, currentUser, recordAudit, state.customers, state.invoices, state.salesOrders, state.salesQuotations, state.settings.defaultExchangeRateUsdIdr, state.warehouses]
   );
 
   const saveVendorRfq = useCallback(
@@ -3919,7 +4092,20 @@ export function useErpController() {
 
       const now = new Date().toISOString();
       const poId = makeId('po');
-      const poNumber = `PO-2026-${String(state.purchaseOrders.length + 92).padStart(4, '0')}`;
+      const poNumber = buildNextSequentialDocNumber(
+        'PO-2026-',
+        state.purchaseOrders.map((p) => p.poNumber),
+        92
+      );
+      const warehouse = state.warehouses.find((w) => w.id === rfq.warehouseId);
+      const vendorTerm = mapSupplierToPaymentTerm(supplier);
+      const incoterm = getDefaultPoIncoterm(supplier);
+      const deliveryLocation = getDefaultPoDeliveryLocation(
+        incoterm,
+        supplier,
+        warehouse,
+        state.settings
+      );
       const expectedDate = new Date(Date.now() + Math.max(1, quote.leadTimeDays) * 86_400_000)
         .toISOString()
         .slice(0, 10);
@@ -3955,6 +4141,11 @@ export function useErpController() {
           `Award dari ${rfq.rfqNumber} (Lead time ${quote.leadTimeDays} hari)`,
           BLUEPRINT_CONSTRAINTS.NOTES_MAX_LENGTH
         ),
+        paymentTerm: vendorTerm.paymentTerm,
+        ...(vendorTerm.paymentTermCustom ? { paymentTermCustom: vendorTerm.paymentTermCustom } : {}),
+        incoterm,
+        deliveryLocation: sanitizeString(deliveryLocation, 300),
+        termsAndConditions: sanitizeString(ensureMandatoryPoTermsNote(), 2000),
         attachmentUrls: [],
         approvalTierRequired,
         createdBy: currentUser.uid,
@@ -4008,7 +4199,7 @@ export function useErpController() {
       toast.success(`${rfq.rfqNumber} dimenangkan oleh ${supplier.name}. ${poNumber} (Draft) telah dibuat.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.purchaseOrders.length, state.settings, state.suppliers, state.vendorRfqs]
+    [authMode, currentUser, recordAudit, state.purchaseOrders, state.settings, state.suppliers, state.vendorRfqs, state.warehouses]
   );
 
   const saveGoodsReturn = useCallback(

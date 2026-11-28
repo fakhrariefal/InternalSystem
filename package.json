@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/models/erpLogic.test.ts && tsx --test src/models/bulkSelection.test.ts && tsx --test src/models/printDocumentModel.test.ts",
+    "test": "tsx --test src/models/erpLogic.test.ts && tsx --test src/models/bulkSelection.test.ts && tsx --test src/models/printDocumentModel.test.ts && tsx --test src/models/orderTerms.test.ts",
     "rules:lint": "eslint firestore.rules",
     "deploy:firebase": "node scripts/update-firebase.mjs",
     "deploy:clean-old-data": "node scripts/update-firebase.mjs --clean-old-data",

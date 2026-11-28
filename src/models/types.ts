@@ -86,6 +86,18 @@ export type SupplierCategory = string;
 export type TaxPkpStatus = 'PKP' | 'Non-PKP';
 export type SupplierPaymentScheme = 'CBD' | 'COD' | 'TOP';
 export type BuyerPaymentScheme = 'CBD' | 'TOP 14 Hari' | 'TOP 30 Hari';
+export type PaymentTermOption =
+  | 'CBD'
+  | 'COD'
+  | 'TOP 14 Hari Kalender'
+  | 'TOP 30 Hari Kalender'
+  | 'TOP 45 Hari Kalender'
+  | 'Custom';
+export type IncotermOption =
+  | 'DDP - Franco Lokasi Pembeli'
+  | 'EXW - Loco Gudang Penjual'
+  | 'DAP'
+  | 'CIP';
 export type PartnerVerificationStatus = 'Pending' | 'Verified' | 'Blacklisted';
 
 export interface Supplier {
@@ -251,6 +263,11 @@ export interface PurchaseOrder {
   totalAmount: number;
   expectedDate?: string;
   notes?: string;
+  paymentTerm?: string;
+  paymentTermCustom?: string;
+  incoterm?: string;
+  deliveryLocation?: string;
+  termsAndConditions?: string;
   attachmentUrls?: string[];
   approvalTierRequired?: 'Manager' | 'Direktur';
   directorApprovedBy?: string;
@@ -285,6 +302,11 @@ export interface SalesOrder {
   podReceiverName?: string;
   podTimestamp?: string;
   notes?: string;
+  paymentTerm?: string;
+  paymentTermCustom?: string;
+  incoterm?: string;
+  deliveryLocation?: string;
+  termsAndConditions?: string;
   createdBy: string;
   createdByName?: string;
   createdAt: string;
@@ -313,6 +335,13 @@ export interface SalesQuotation {
   taxAmount: number;
   totalAmount: number;
   validUntil: string;
+  validityPeriod?: string;
+  leadTime?: string;
+  paymentTerm?: string;
+  paymentTermCustom?: string;
+  incoterm?: string;
+  deliveryLocation?: string;
+  termsAndConditions?: string;
   notes?: string;
   convertedSoId?: string;
   convertedSoNumber?: string;

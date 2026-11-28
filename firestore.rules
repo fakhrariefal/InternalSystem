@@ -245,7 +245,7 @@ service cloud.firestore {
 
     function isValidPurchaseOrder(data) {
       return data.keys().hasAll(['id', 'poNumber', 'supplierId', 'warehouseId', 'currency', 'exchangeRate', 'status', 'items', 'totalAmount', 'createdBy', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'poNumber', 'supplierId', 'supplierName', 'warehouseId', 'warehouseName', 'currency', 'exchangeRate', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'expectedDate', 'notes', 'attachmentUrls', 'approvalTierRequired', 'directorApprovedBy', 'createdBy', 'createdByName', 'approvedBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'poNumber', 'supplierId', 'supplierName', 'warehouseId', 'warehouseName', 'currency', 'exchangeRate', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'expectedDate', 'notes', 'paymentTerm', 'paymentTermCustom', 'incoterm', 'deliveryLocation', 'termsAndConditions', 'attachmentUrls', 'approvalTierRequired', 'directorApprovedBy', 'createdBy', 'createdByName', 'approvedBy', 'createdAt', 'updatedAt'])
         && isValidId(data.id)
         && data.poNumber is string && data.poNumber.size() >= 4 && data.poNumber.size() <= 40
         && isValidId(data.supplierId)
@@ -262,6 +262,11 @@ service cloud.firestore {
         && data.totalAmount is number && data.totalAmount >= 0
         && (!('expectedDate' in data) || (data.expectedDate is string && data.expectedDate.size() <= 32))
         && (!('notes' in data) || (data.notes is string && data.notes.size() <= 600))
+        && (!('paymentTerm' in data) || (data.paymentTerm is string && data.paymentTerm.size() <= 80))
+        && (!('paymentTermCustom' in data) || (data.paymentTermCustom is string && data.paymentTermCustom.size() <= 120))
+        && (!('incoterm' in data) || (data.incoterm is string && data.incoterm.size() <= 80))
+        && (!('deliveryLocation' in data) || (data.deliveryLocation is string && data.deliveryLocation.size() <= 300))
+        && (!('termsAndConditions' in data) || (data.termsAndConditions is string && data.termsAndConditions.size() <= 2000))
         && (!('attachmentUrls' in data) || (data.attachmentUrls is list && data.attachmentUrls.size() <= 5 && (data.attachmentUrls.size() == 0 || data.attachmentUrls[0] is string)))
         && (!('approvalTierRequired' in data) || data.approvalTierRequired in ['Manager', 'Direktur'])
         && (!('directorApprovedBy' in data) || (data.directorApprovedBy is string && data.directorApprovedBy.size() <= 128))
@@ -289,7 +294,7 @@ service cloud.firestore {
 
     function isValidSalesOrder(data) {
       return data.keys().hasAll(['id', 'soNumber', 'customerId', 'warehouseId', 'currency', 'status', 'items', 'totalAmount', 'createdBy', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'soNumber', 'customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'dueDate', 'invoiceNumber', 'taxInvoiceNumber', 'quotationId', 'quotationNumber', 'podImageUrl', 'podFileName', 'podReceiverName', 'podTimestamp', 'notes', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'soNumber', 'customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'dueDate', 'invoiceNumber', 'taxInvoiceNumber', 'quotationId', 'quotationNumber', 'podImageUrl', 'podFileName', 'podReceiverName', 'podTimestamp', 'notes', 'paymentTerm', 'paymentTermCustom', 'incoterm', 'deliveryLocation', 'termsAndConditions', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
         && isValidId(data.id)
         && data.soNumber is string && data.soNumber.size() >= 4 && data.soNumber.size() <= 40
         && isValidId(data.customerId)
@@ -313,6 +318,11 @@ service cloud.firestore {
         && (!('podReceiverName' in data) || (data.podReceiverName is string && data.podReceiverName.size() <= 120))
         && (!('podTimestamp' in data) || (data.podTimestamp is string && data.podTimestamp.size() <= 40))
         && (!('notes' in data) || (data.notes is string && data.notes.size() <= 600))
+        && (!('paymentTerm' in data) || (data.paymentTerm is string && data.paymentTerm.size() <= 80))
+        && (!('paymentTermCustom' in data) || (data.paymentTermCustom is string && data.paymentTermCustom.size() <= 120))
+        && (!('incoterm' in data) || (data.incoterm is string && data.incoterm.size() <= 80))
+        && (!('deliveryLocation' in data) || (data.deliveryLocation is string && data.deliveryLocation.size() <= 300))
+        && (!('termsAndConditions' in data) || (data.termsAndConditions is string && data.termsAndConditions.size() <= 2000))
         && isValidId(data.createdBy)
         && (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120))
         && data.createdAt is timestamp
@@ -476,7 +486,7 @@ service cloud.firestore {
 
     function isValidSalesQuotation(data) {
       return data.keys().hasAll(['id', 'quotationNumber', 'customerId', 'warehouseId', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'createdBy', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'quotationNumber', 'customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'notes', 'convertedSoId', 'convertedSoNumber', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'quotationNumber', 'customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'validityPeriod', 'leadTime', 'paymentTerm', 'paymentTermCustom', 'incoterm', 'deliveryLocation', 'termsAndConditions', 'notes', 'convertedSoId', 'convertedSoNumber', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
         && isValidId(data.id)
         && data.quotationNumber is string && data.quotationNumber.size() >= 4 && data.quotationNumber.size() <= 40
         && isValidId(data.customerId)
@@ -490,6 +500,13 @@ service cloud.firestore {
         && data.taxAmount is number && data.taxAmount >= 0
         && data.totalAmount is number && data.totalAmount >= 0
         && data.validUntil is string && data.validUntil.size() >= 4 && data.validUntil.size() <= 32
+        && (!('validityPeriod' in data) || (data.validityPeriod is string && data.validityPeriod.size() <= 80))
+        && (!('leadTime' in data) || (data.leadTime is string && data.leadTime.size() <= 80))
+        && (!('paymentTerm' in data) || (data.paymentTerm is string && data.paymentTerm.size() <= 80))
+        && (!('paymentTermCustom' in data) || (data.paymentTermCustom is string && data.paymentTermCustom.size() <= 120))
+        && (!('incoterm' in data) || (data.incoterm is string && data.incoterm.size() <= 80))
+        && (!('deliveryLocation' in data) || (data.deliveryLocation is string && data.deliveryLocation.size() <= 300))
+        && (!('termsAndConditions' in data) || (data.termsAndConditions is string && data.termsAndConditions.size() <= 2000))
         && (!('notes' in data) || (data.notes is string && data.notes.size() <= 600))
         && (!('convertedSoId' in data) || (data.convertedSoId is string && data.convertedSoId.size() <= 128))
         && (!('convertedSoNumber' in data) || (data.convertedSoNumber is string && data.convertedSoNumber.size() <= 40))
@@ -878,7 +895,7 @@ service cloud.firestore {
                   )
                 )) ||
               (hasRole(['Purchasing'])
-                && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'taxAmount', 'totalAmount', 'expectedDate', 'notes', 'attachmentUrls', 'status', 'updatedAt'])
+                && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'taxAmount', 'totalAmount', 'expectedDate', 'notes', 'paymentTerm', 'paymentTermCustom', 'incoterm', 'deliveryLocation', 'termsAndConditions', 'attachmentUrls', 'status', 'updatedAt'])
                 && incoming().status in ['Draft', 'Submitted', 'Ordered', 'Cancelled']) ||
               (hasRole(['Warehouse'])
                 && existing().status in ['Approved by Manager', 'Ordered', 'Partially Received']
@@ -933,7 +950,7 @@ service cloud.firestore {
           (
             existing().status != 'Closed' && (
               (hasRole(['Manager', 'Sales'])
-                && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'taxAmount', 'totalAmount', 'dueDate', 'notes', 'status', 'quotationId', 'quotationNumber', 'updatedAt'])
+                && incoming().diff(existing()).affectedKeys().hasOnly(['items', 'subtotal', 'taxAmount', 'totalAmount', 'dueDate', 'notes', 'status', 'quotationId', 'quotationNumber', 'paymentTerm', 'paymentTermCustom', 'incoterm', 'deliveryLocation', 'termsAndConditions', 'updatedAt'])
                 && incoming().status in ['Draft', 'Confirmed', 'Closed']) ||
               (hasRole(['Warehouse'])
                 && existing().status in ['Confirmed', 'Partially Delivered']
@@ -1116,7 +1133,7 @@ service cloud.firestore {
         && incoming().createdBy == existing().createdBy
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'notes', 'convertedSoId', 'convertedSoNumber', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'validityPeriod', 'leadTime', 'paymentTerm', 'paymentTermCustom', 'incoterm', 'deliveryLocation', 'termsAndConditions', 'notes', 'convertedSoId', 'convertedSoNumber', 'updatedAt']);
       allow delete: if isDirektur() && isValidId(quotationId);
     }
 

@@ -1,4 +1,11 @@
 import { formatCurrency, getEffectiveTaxRatePercent, isCompanyPkp } from './erpLogic';
+import {
+  buildOrderTermsSummaryForPo,
+  buildOrderTermsSummaryForQuotation,
+  buildOrderTermsSummaryForSo,
+  resolvePaymentTermDisplay,
+  type OrderTermsSectionSummary,
+} from './orderTerms';
 import type {
   AccountingInvoice,
   CompanySettings,
@@ -64,6 +71,7 @@ export interface PrintableDocumentData {
   rightMeta: PrintMetadataRow[];
   columns: PrintTableColumn[];
   rows: string[][];
+  termsSection?: OrderTermsSectionSummary;
   notesTitle?: string;
   notesText?: string;
   statusBanner?: {
@@ -123,7 +131,8 @@ function terbilangIdLocal(n: number): string {
 export function buildPurchaseOrderPrintDoc(
   po: PurchaseOrder,
   company: CompanySettings,
-  supplier?: Supplier
+  supplier?: Supplier,
+  warehouse?: Warehouse
 ): PrintableDocumentData {
   return {
     docType: 'PURCHASE_ORDER',
@@ -141,7 +150,7 @@ export function buildPurchaseOrderPrintDoc(
       { label: 'Alamat Supplier', value: supplier?.address || '-' },
     ],
     rightMeta: [
-      { label: 'Gudang Tujuan', value: po.warehouseName || po.warehouseId },
+      { label: 'Gudang Tujuan', value: warehouse?.name || po.warehouseName || po.warehouseId },
       { label: 'Tanggal PO', value: (po.createdAt || '').slice(0, 10) || '-' },
       { label: 'Target Kirim', value: po.expectedDate || '-' },
       { label: 'Mata Uang', value: po.currency },
@@ -164,8 +173,7 @@ export function buildPurchaseOrderPrintDoc(
       formatCurrency(item.unitPrice, po.currency),
       formatCurrency(item.lineTotal, po.currency),
     ]),
-    notesTitle: po.notes ? 'Catatan Purchase Order' : undefined,
-    notesText: po.notes || undefined,
+    termsSection: buildOrderTermsSummaryForPo(po, supplier, warehouse, company),
     totals: [
       { label: 'Subtotal', value: formatCurrency(po.subtotal ?? po.totalAmount, po.currency) },
       { label: 'PPN', value: formatCurrency(po.taxAmount ?? 0, po.currency) },
@@ -214,7 +222,14 @@ export function buildSalesQuotationPrintDoc(
       { label: 'Gudang Asal', value: warehouse?.name || qt.warehouseName || qt.warehouseId },
       { label: 'Tanggal Terbit', value: (qt.createdAt || '').slice(0, 10) || '-' },
       { label: 'Berlaku Hingga', value: qt.validUntil },
-      { label: 'Syarat Bayar', value: customer?.paymentScheme || 'CBD' },
+      {
+        label: 'Syarat Bayar',
+        value: resolvePaymentTermDisplay(
+          qt.paymentTerm,
+          qt.paymentTermCustom,
+          customer?.paymentScheme || 'CBD'
+        ),
+      },
     ],
     columns: [
       { header: 'No', align: 'center', widthClass: 'w-9' },
@@ -234,8 +249,7 @@ export function buildSalesQuotationPrintDoc(
       formatCurrency(item.unitPrice, qt.currency),
       formatCurrency(item.lineTotal, qt.currency),
     ]),
-    notesTitle: qt.notes ? 'Catatan & Ketentuan' : undefined,
-    notesText: qt.notes || undefined,
+    termsSection: buildOrderTermsSummaryForQuotation(qt, customer, warehouse),
     totals: [
       { label: 'Subtotal (DPP)', value: formatCurrency(qt.subtotal, qt.currency) },
       {
@@ -440,8 +454,7 @@ export function buildSalesOrderPrintDoc(
       formatCurrency(item.unitPrice, so.currency),
       formatCurrency(item.lineTotal, so.currency),
     ]),
-    notesTitle: so.notes ? 'Catatan Sales Order' : undefined,
-    notesText: so.notes || undefined,
+    termsSection: buildOrderTermsSummaryForSo(so, customer, warehouse),
     totals: [
       { label: 'Subtotal', value: formatCurrency(so.subtotal ?? so.totalAmount, so.currency) },
       { label: 'PPN', value: formatCurrency(so.taxAmount ?? 0, so.currency) },

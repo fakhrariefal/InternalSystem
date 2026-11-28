@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { OrderTermsFormSection } from '../components/OrderTermsFormSection';
 import { usePrintDocument } from '../components/PrintableDocumentModal';
 import { BulkActionBar, SelectCheckbox } from '../components/ui/BulkActions';
 import {
@@ -57,12 +58,21 @@ import {
   validateSupplierForPurchaseOrder,
   type ThreeWayMatchStatus,
 } from '../models/erpLogic';
+import {
+  getDefaultPoDeliveryLocation,
+  getDefaultPoIncoterm,
+  getDefaultPurchaseOrderTerms,
+  MANDATORY_PO_ATTACHMENT_NOTE,
+  mapSupplierToPaymentTerm,
+  resolvePaymentTermDisplay,
+} from '../models/orderTerms';
 import { hasPermission } from '../models/rbac';
 import { buildPurchaseOrderPrintDoc } from '../models/printDocumentModel';
 import { createInitialSeedState } from '../models/seedData';
 import type {
   CurrencyCode,
   GoodsReturn,
+  PaymentTermOption,
   PoStatus,
   PurchaseOrder,
   VendorRfq,
@@ -163,12 +173,24 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
   };
 
   // Create PO form
-  const [supplierId, setSupplierId] = useState(state.suppliers[0]?.id || '');
-  const [warehouseId, setWarehouseId] = useState(state.warehouses[0]?.id || '');
-  const [currency, setCurrency] = useState<CurrencyCode>('IDR');
+  const initialSupplier = state.suppliers[0];
+  const initialWarehouse = state.warehouses[0];
+  const initialSupTerm = mapSupplierToPaymentTerm(initialSupplier);
+  const initialPoIncoterm = getDefaultPoIncoterm(initialSupplier);
+
+  const [supplierId, setSupplierId] = useState(initialSupplier?.id || '');
+  const [warehouseId, setWarehouseId] = useState(initialWarehouse?.id || '');
+  const [currency, setCurrency] = useState<CurrencyCode>(initialSupplier?.defaultCurrency || 'IDR');
   const [expectedDate, setExpectedDate] = useState('2026-12-15');
   const [notes, setNotes] = useState('');
   const [docFile, setDocFile] = useState<File | null>(null);
+  const [poPaymentTerm, setPoPaymentTerm] = useState<PaymentTermOption>(initialSupTerm.paymentTerm);
+  const [poPaymentTermCustom, setPoPaymentTermCustom] = useState(initialSupTerm.paymentTermCustom);
+  const [poIncoterm, setPoIncoterm] = useState<string>(initialPoIncoterm);
+  const [poDeliveryLocation, setPoDeliveryLocation] = useState<string>(
+    getDefaultPoDeliveryLocation(initialPoIncoterm, initialSupplier, initialWarehouse, state.settings)
+  );
+  const [poTerms, setPoTerms] = useState<string>(getDefaultPurchaseOrderTerms());
   const [draftItems, setDraftItems] = useState<DraftPoRow[]>([
     {
       productId: state.products[0]?.id || '',
@@ -346,9 +368,35 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
     [state]
   );
 
+  const applyVendorDefaultsToPo = (
+    supId: string,
+    whId: string,
+    overrideIncoterm?: string,
+    resetTermsText: boolean = false
+  ) => {
+    const sup = state.suppliers.find((s) => s.id === supId);
+    const wh = state.warehouses.find((w) => w.id === whId);
+    if (sup) setCurrency(sup.defaultCurrency);
+    const mappedTerm = mapSupplierToPaymentTerm(sup);
+    setPoPaymentTerm(mappedTerm.paymentTerm);
+    setPoPaymentTermCustom(mappedTerm.paymentTermCustom);
+    const nextIncoterm = overrideIncoterm || getDefaultPoIncoterm(sup);
+    setPoIncoterm(nextIncoterm);
+    setPoDeliveryLocation(getDefaultPoDeliveryLocation(nextIncoterm, sup, wh, state.settings));
+    if (resetTermsText) {
+      setPoTerms(getDefaultPurchaseOrderTerms());
+    }
+  };
+
   const openCreateModal = () => {
-    if (!supplierId && state.suppliers[0]) setSupplierId(state.suppliers[0].id);
-    if (!warehouseId && state.warehouses[0]) setWarehouseId(state.warehouses[0].id);
+    const initSupId = supplierId || state.suppliers[0]?.id || '';
+    const initWhId = warehouseId || state.warehouses[0]?.id || '';
+    if (!supplierId && initSupId) setSupplierId(initSupId);
+    if (!warehouseId && initWhId) setWarehouseId(initWhId);
+    setNotes('');
+    setDocFile(null);
+    setExpectedDate(new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10));
+    applyVendorDefaultsToPo(initSupId, initWhId, undefined, true);
     if ((!draftItems[0]?.productId || draftItems.length === 0) && state.products[0]) {
       setDraftItems([
         {
@@ -670,9 +718,10 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                             aria-label={`Cetak Preview PO ${po.poNumber}`}
                             onClick={() => {
                               const sup = state.suppliers.find((s) => s.id === po.supplierId);
+                              const wh = state.warehouses.find((w) => w.id === po.warehouseId);
                               openPrintPreview(
-                                buildPurchaseOrderPrintDoc(po, state.settings, sup),
-                                () => exportPurchaseOrderPdf(po, state.settings, sup)
+                                buildPurchaseOrderPrintDoc(po, state.settings, sup, wh),
+                                () => exportPurchaseOrderPdf(po, state.settings, sup, wh)
                               );
                             }}
                           >
@@ -791,9 +840,10 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                               aria-label={`Cetak Preview PO ${po.poNumber}`}
                               onClick={() => {
                                 const sup = state.suppliers.find((s) => s.id === po.supplierId);
+                                const wh = state.warehouses.find((w) => w.id === po.warehouseId);
                                 openPrintPreview(
-                                  buildPurchaseOrderPrintDoc(po, state.settings, sup),
-                                  () => exportPurchaseOrderPdf(po, state.settings, sup)
+                                  buildPurchaseOrderPrintDoc(po, state.settings, sup, wh),
+                                  () => exportPurchaseOrderPdf(po, state.settings, sup, wh)
                                 );
                               }}
                             >
@@ -1452,6 +1502,11 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                 currency,
                 expectedDate,
                 notes,
+                paymentTerm: poPaymentTerm,
+                paymentTermCustom: poPaymentTermCustom,
+                incoterm: poIncoterm,
+                deliveryLocation: poDeliveryLocation,
+                termsAndConditions: poTerms,
                 items: draftItems,
                 submitImmediately: true,
                 attachmentFile: docFile,
@@ -1476,8 +1531,7 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                       onChange={(e) => {
                         const id = e.target.value;
                         setSupplierId(id);
-                        const sup = state.suppliers.find((s) => s.id === id);
-                        if (sup) setCurrency(sup.defaultCurrency);
+                        applyVendorDefaultsToPo(id, warehouseId, undefined, false);
                       }}
                     >
                       {state.suppliers.map((s) => (
@@ -1492,7 +1546,21 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                     <NativeSelect
                       id="po-wh"
                       value={warehouseId}
-                      onChange={(e) => setWarehouseId(e.target.value)}
+                      onChange={(e) => {
+                        const nextWhId = e.target.value;
+                        setWarehouseId(nextWhId);
+                        if (!poIncoterm.startsWith('EXW')) {
+                          const wh = state.warehouses.find((w) => w.id === nextWhId);
+                          setPoDeliveryLocation(
+                            getDefaultPoDeliveryLocation(
+                              poIncoterm,
+                              selectedSupplier,
+                              wh,
+                              state.settings
+                            )
+                          );
+                        }
+                      }}
                     >
                       {state.warehouses.map((w) => (
                         <option key={w.id} value={w.id}>
@@ -1768,11 +1836,11 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
               {/* Section 3: Notes & Attachment */}
               <div className="border-t border-slate-100 pt-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <Label htmlFor="po-notes">Catatan Pembelian</Label>
+                  <Label htmlFor="po-notes">Catatan Pembelian (Opsional)</Label>
                   <Textarea
                     id="po-notes"
                     rows={3}
-                    placeholder="Instruksi pengiriman, syarat pembayaran, atau detail tambahan..."
+                    placeholder="Instruksi khusus pengiriman atau detail tambahan internal..."
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                   />
@@ -1796,6 +1864,64 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                   </label>
                 </div>
               </div>
+
+              {/* Section 4: Footer Left (Terms & Conditions) + Right (Ringkasan Total) */}
+              <OrderTermsFormSection
+                idPrefix="po"
+                docType="PURCHASE_ORDER"
+                paymentTerm={poPaymentTerm}
+                onPaymentTermChange={(term) => {
+                  setPoPaymentTerm(term);
+                  if (term !== 'Custom') setPoPaymentTermCustom('');
+                }}
+                paymentTermCustom={poPaymentTermCustom}
+                onPaymentTermCustomChange={setPoPaymentTermCustom}
+                incoterm={poIncoterm}
+                onIncotermChange={(nextIncoterm) => {
+                  setPoIncoterm(nextIncoterm);
+                  const wh = state.warehouses.find((w) => w.id === warehouseId);
+                  setPoDeliveryLocation(
+                    getDefaultPoDeliveryLocation(
+                      nextIncoterm,
+                      selectedSupplier,
+                      wh,
+                      state.settings
+                    )
+                  );
+                }}
+                deliveryLocation={poDeliveryLocation}
+                onDeliveryLocationChange={setPoDeliveryLocation}
+                termsAndConditions={poTerms}
+                onTermsAndConditionsChange={setPoTerms}
+                sourceBadge={
+                  selectedSupplier ? `Default Master Vendor (${selectedSupplier.code})` : undefined
+                }
+                onResetDefaultTerms={() => setPoTerms(getDefaultPurchaseOrderTerms())}
+                currency={currency}
+                subtotal={previewTotals.subtotal}
+                taxAmount={previewTotals.taxAmount}
+                totalAmount={previewTotals.totalAmount}
+                companyIsPkp={companyIsPkp}
+                effectiveTaxRate={effectiveTaxRate}
+                extraTotalsNode={
+                  <div className="space-y-1 text-slate-600">
+                    {currency === 'USD' && (
+                      <div className="flex items-center justify-between gap-2">
+                        <span>Estimasi IDR</span>
+                        <strong className="font-mono text-[#0B1B3A]">
+                          {formatCurrency(previewTotalIdr, 'IDR')}
+                        </strong>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Otoritas Approval</span>
+                      <span className="font-semibold text-[#0B1B3A]">
+                        {previewNeedsDirector ? 'Direktur' : 'Manager'}
+                      </span>
+                    </div>
+                  </div>
+                }
+              />
             </DialogBody>
 
             <DialogFooter>
@@ -2481,18 +2607,22 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                             {receiveMode && (
                               <td className="py-2.5 px-3.5 text-right">
                                 <Input
-                                  type="number"
-                                  min={0}
-                                  max={remaining}
+                                  type="text"
+                                  inputMode="numeric"
+                                  pattern="[0-9]*"
                                   aria-label={`Qty diterima ${it.sku}`}
                                   value={receiveQtys[it.productId] ?? '0'}
-                                  onChange={(e) =>
+                                  onChange={(e) => {
+                                    const clean = sanitizeDigits(e.target.value);
+                                    const clamped = clean
+                                      ? String(Math.min(remaining, Number(clean)))
+                                      : '0';
                                     setReceiveQtys((prev) => ({
                                       ...prev,
-                                      [it.productId]: e.target.value,
-                                    }))
-                                  }
-                                  className="h-9 w-24 ml-auto text-right font-mono"
+                                      [it.productId]: clamped,
+                                    }));
+                                  }}
+                                  className="h-9 w-24 ml-auto text-right font-mono tabular-nums"
                                 />
                               </td>
                             )}
@@ -2502,6 +2632,71 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                     </tbody>
                   </table>
                 </div>
+
+                {/* Terms & Conditions + Totals Summary inside PO Detail */}
+                {!receiveMode && (
+                  <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(240px,0.8fr)] gap-3.5 items-start">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2 text-xs">
+                      <div className="font-bold uppercase tracking-wider text-[11px] text-[#0B1B3A]">
+                        Terms &amp; Conditions
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-[11.5px]">
+                        <div>
+                          <span className="text-slate-500">Payment Term: </span>
+                          <strong className="text-[#0B1B3A]">
+                            {resolvePaymentTermDisplay(
+                              selectedPo.paymentTerm,
+                              selectedPo.paymentTermCustom,
+                              'TOP 30 Hari Kalender'
+                            )}
+                          </strong>
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Incoterms: </span>
+                          <strong className="text-[#0B1B3A]">
+                            {selectedPo.incoterm || 'DDP - Franco Lokasi Pembeli'}
+                          </strong>
+                        </div>
+                        <div className="sm:col-span-2">
+                          <span className="text-slate-500">Lokasi Pengiriman: </span>
+                          <strong className="text-[#0B1B3A]">
+                            {selectedPo.deliveryLocation || selectedPo.warehouseName || '-'}
+                          </strong>
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] font-medium text-amber-950">
+                        <strong>Catatan Wajib:</strong> {MANDATORY_PO_ATTACHMENT_NOTE}
+                      </div>
+                      <div className="whitespace-pre-wrap text-[11.5px] text-slate-700 leading-relaxed">
+                        {selectedPo.termsAndConditions || getDefaultPurchaseOrderTerms()}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-[#D8E2EF] bg-[#F4F7FB] p-3.5 space-y-1.5 text-xs">
+                      <div className="font-bold uppercase tracking-wider text-[11px] text-[#0B1B3A]">
+                        Ringkasan Total
+                      </div>
+                      <div className="flex justify-between text-slate-600">
+                        <span>Subtotal</span>
+                        <span className="font-mono font-semibold text-[#0B1B3A]">
+                          {formatCurrency(selectedPo.subtotal ?? selectedPo.totalAmount, selectedPo.currency)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-slate-600">
+                        <span>PPN</span>
+                        <span className="font-mono font-semibold text-[#0B1B3A]">
+                          {formatCurrency(selectedPo.taxAmount ?? 0, selectedPo.currency)}
+                        </span>
+                      </div>
+                      <div className="border-t border-slate-300 pt-1.5 flex justify-between font-bold text-sm text-[#0B1B3A]">
+                        <span>Grand Total</span>
+                        <span className="font-mono">
+                          {formatCurrency(selectedPo.totalAmount, selectedPo.currency)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {selectedPo.status === 'Submitted' && selectedPoNeedsDirector && !canApproveDirector && (
                   <div className="rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
@@ -2578,9 +2773,10 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                       size="sm"
                       onClick={() => {
                         const sup = state.suppliers.find((s) => s.id === selectedPo.supplierId);
+                        const wh = state.warehouses.find((w) => w.id === selectedPo.warehouseId);
                         openPrintPreview(
-                          buildPurchaseOrderPrintDoc(selectedPo, state.settings, sup),
-                          () => exportPurchaseOrderPdf(selectedPo, state.settings, sup)
+                          buildPurchaseOrderPrintDoc(selectedPo, state.settings, sup, wh),
+                          () => exportPurchaseOrderPdf(selectedPo, state.settings, sup, wh)
                         );
                       }}
                     >

@@ -11,6 +11,13 @@ import {
   type MonthlyPerformanceSummary,
   type VatReconciliationSummary,
 } from '../models/erpLogic';
+import {
+  buildOrderTermsSummaryForPo,
+  buildOrderTermsSummaryForQuotation,
+  buildOrderTermsSummaryForSo,
+  resolvePaymentTermDisplay,
+  type OrderTermsSectionSummary,
+} from '../models/orderTerms';
 import { formatPartnerRegistrationNumber } from '../models/printDocumentModel';
 import type {
   AccountingInvoice,
@@ -268,6 +275,152 @@ function ensureSpaceForBlock(
     return drawCorporateBanner(doc, company, documentTitle, docBadge) + 2;
   }
   return currentY;
+}
+
+interface PdfTotalBoxRow {
+  label: string;
+  value: string;
+  isGrandTotal?: boolean;
+}
+
+/**
+ * Draws side-by-side bottom-left Terms & Conditions card and bottom-right Totals card
+ * with overflow protection against the bottom QR verification dock.
+ */
+function drawBottomTermsAndTotalsPdf(
+  doc: jsPDF,
+  startY: number,
+  termsSummary: OrderTermsSectionSummary,
+  totalRows: PdfTotalBoxRow[],
+  company: CompanySettings,
+  documentTitle: string,
+  docBadge: string
+): number {
+  const leftX = 14;
+  const leftW = 98;
+  const innerW = leftW - 7;
+  const labelW = 24;
+  const valW = leftW - labelW - 11;
+
+  // Measure left box height before drawing
+  let measureH = 6.5; // header
+  doc.setFontSize(7.2);
+  const measuredMeta = termsSummary.metaRows.map((row) => {
+    const valLines = doc.splitTextToSize((row.value || '-').trim() || '-', valW) as string[];
+    const h = Math.max(1, valLines.length) * 3.4 + 0.9;
+    measureH += h;
+    return { label: row.label, valLines, h };
+  });
+  measureH += 2; // divider spacing
+
+  doc.setFontSize(6.9);
+  const noticeLines = termsSummary.mandatoryNotice
+    ? (doc.splitTextToSize(`Catatan Wajib: ${termsSummary.mandatoryNotice}`, innerW - 4) as string[])
+    : [];
+  const noticeBoxH = noticeLines.length > 0 ? noticeLines.length * 3.2 + 3.2 : 0;
+  if (noticeBoxH > 0) {
+    measureH += noticeBoxH + 2.2;
+  }
+
+  doc.setFontSize(6.8);
+  const termsLines = doc.splitTextToSize(termsSummary.termsText || '-', innerW) as string[];
+  measureH += Math.max(1, termsLines.length) * 3.15 + 1.8;
+
+  const extraLines = termsSummary.additionalNotes
+    ? (doc.splitTextToSize(`Catatan Tambahan: ${termsSummary.additionalNotes}`, innerW) as string[])
+    : [];
+  if (extraLines.length > 0) {
+    measureH += 2.2 + extraLines.length * 3.15;
+  }
+  measureH += 2.5;
+
+  const rightH = Math.max(22, totalRows.length * 5.6 + 6);
+  const blockH = Math.max(measureH, rightH);
+
+  const y = ensureSpaceForBlock(doc, startY, blockH + 4, company, documentTitle, docBadge);
+
+  // Draw Left Box: Terms & Conditions
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(216, 226, 239);
+  doc.setLineWidth(0.3);
+  doc.roundedRect(leftX, y, leftW, blockH, 1.2, 1.2, 'FD');
+
+  let curY = y + 4.8;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.4);
+  doc.setTextColor(11, 27, 58);
+  doc.text('TERMS & CONDITIONS', leftX + 3.5, curY);
+  curY += 4.2;
+
+  for (const m of measuredMeta) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.1);
+    doc.setTextColor(71, 85, 105);
+    doc.text(m.label, leftX + 3.5, curY);
+    doc.setFont('helvetica', 'bold');
+    doc.text(':', leftX + 27.5, curY);
+    doc.setTextColor(15, 23, 42);
+    doc.text(m.valLines, leftX + 29.8, curY);
+    curY += m.h;
+  }
+
+  doc.setDrawColor(226, 232, 240);
+  doc.line(leftX + 3.5, curY - 0.3, leftX + leftW - 3.5, curY - 0.3);
+  curY += 2.6;
+
+  if (noticeLines.length > 0) {
+    doc.setFillColor(254, 243, 199);
+    doc.setDrawColor(245, 158, 11);
+    doc.roundedRect(leftX + 3.2, curY - 2.3, leftW - 6.4, noticeBoxH, 0.8, 0.8, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.8);
+    doc.setTextColor(120, 53, 15);
+    doc.text(noticeLines, leftX + 4.8, curY + 0.8);
+    curY += noticeBoxH + 1.6;
+  }
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6.8);
+  doc.setTextColor(30, 41, 59);
+  doc.text(termsLines, leftX + 3.5, curY);
+  curY += Math.max(1, termsLines.length) * 3.15 + 1.5;
+
+  if (extraLines.length > 0) {
+    doc.setDrawColor(203, 213, 225);
+    doc.line(leftX + 3.5, curY - 0.6, leftX + leftW - 3.5, curY - 0.6);
+    curY += 2.2;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.7);
+    doc.setTextColor(51, 65, 85);
+    doc.text(extraLines, leftX + 3.5, curY);
+  }
+
+  // Draw Right Box: Totals Summary (aligned horizontally at exact same Y)
+  const rightX = 116;
+  const rightW = 80;
+  doc.setFillColor(244, 247, 251);
+  doc.setDrawColor(216, 226, 239);
+  doc.roundedRect(rightX, y, rightW, rightH, 1.2, 1.2, 'FD');
+
+  let totY = y + 5.5;
+  totalRows.forEach((row, idx) => {
+    const isGrand = Boolean(row.isGrandTotal || idx === totalRows.length - 1);
+    if (isGrand && idx > 0) {
+      doc.setDrawColor(203, 213, 225);
+      doc.line(rightX + 3.5, totY - 2.4, rightX + rightW - 3.5, totY - 2.4);
+      totY += 1.2;
+    }
+    doc.setFont('helvetica', isGrand ? 'bold' : 'normal');
+    doc.setFontSize(isGrand ? 8.6 : 7.8);
+    doc.setTextColor(isGrand ? 11 : 71, isGrand ? 27 : 85, isGrand ? 58 : 105);
+    doc.text(row.label, rightX + 3.5, totY);
+    doc.text(':', rightX + 31.5, totY);
+    doc.setTextColor(15, 23, 42);
+    doc.text(row.value, rightX + rightW - 3.5, totY, { align: 'right' });
+    totY += 5.4;
+  });
+
+  return y + blockH;
 }
 
 /**
@@ -546,7 +699,8 @@ export function exportMonthlyPerformancePdf(
 export async function exportPurchaseOrderPdf(
   po: PurchaseOrder,
   company: CompanySettings,
-  supplier?: Supplier
+  supplier?: Supplier,
+  warehouse?: Warehouse
 ): Promise<void> {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const title = 'PURCHASE ORDER (PO)';
@@ -565,7 +719,7 @@ export async function exportPurchaseOrderPdf(
       { label: 'Alamat Supplier', value: supplier?.address || '-' },
     ],
     [
-      { label: 'Gudang Tujuan', value: po.warehouseName || po.warehouseId },
+      { label: 'Gudang Tujuan', value: warehouse?.name || po.warehouseName || po.warehouseId },
       { label: 'Tanggal PO', value: (po.createdAt || '').slice(0, 10) || '-' },
       { label: 'Target Kirim', value: po.expectedDate || '-' },
       { label: 'Mata Uang', value: po.currency },
@@ -598,53 +752,24 @@ export async function exportPurchaseOrderPdf(
     },
   });
 
-  let y = getLastAutoTableFinalY(doc, tableStartY) + 5;
-  y = ensureSpaceForBlock(doc, y, 56, company, title, po.poNumber);
-
-  // Totals Card (Right) + Notes (Left)
-  let notesBottomY = y + 22;
-  if (po.notes) {
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.8);
-    doc.setTextColor(71, 85, 105);
-    doc.text('Catatan Purchase Order:', 14, y + 3);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(15, 23, 42);
-    const noteLines = doc.splitTextToSize(po.notes, 96);
-    doc.text(noteLines, 14, y + 7.5);
-    notesBottomY = Math.max(notesBottomY, y + 7.5 + noteLines.length * 4);
-  }
-
-  doc.setFillColor(244, 247, 251);
-  doc.setDrawColor(216, 226, 239);
-  doc.roundedRect(118, y, 78, 22, 1.2, 1.2, 'FD');
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  doc.setTextColor(71, 85, 105);
-  doc.text('Subtotal', 122, y + 5.5);
-  doc.text(':', 143, y + 5.5);
-  doc.setTextColor(15, 23, 42);
-  doc.text(formatCurrency(po.subtotal ?? po.totalAmount, po.currency), 192, y + 5.5, { align: 'right' });
-
-  doc.setTextColor(71, 85, 105);
-  doc.text('PPN', 122, y + 10.8);
-  doc.text(':', 143, y + 10.8);
-  doc.setTextColor(15, 23, 42);
-  doc.text(formatCurrency(po.taxAmount ?? 0, po.currency), 192, y + 10.8, { align: 'right' });
-
-  doc.setDrawColor(203, 213, 225);
-  doc.line(122, y + 13.5, 192, y + 13.5);
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8.8);
-  doc.setTextColor(11, 27, 58);
-  doc.text('Grand Total', 122, y + 18.5);
-  doc.text(':', 143, y + 18.5);
-  doc.text(formatCurrency(po.totalAmount, po.currency), 192, y + 18.5, { align: 'right' });
+  const blockStartY = getLastAutoTableFinalY(doc, tableStartY) + 5;
+  const termsSummary = buildOrderTermsSummaryForPo(po, supplier, warehouse, company);
+  const blockEndY = drawBottomTermsAndTotalsPdf(
+    doc,
+    blockStartY,
+    termsSummary,
+    [
+      { label: 'Subtotal', value: formatCurrency(po.subtotal ?? po.totalAmount, po.currency) },
+      { label: 'PPN', value: formatCurrency(po.taxAmount ?? 0, po.currency) },
+      { label: 'Grand Total', value: formatCurrency(po.totalAmount, po.currency), isGrandTotal: true },
+    ],
+    company,
+    title,
+    po.poNumber
+  );
 
   // Signatures
-  const sigY = ensureSpaceForBlock(doc, notesBottomY + 7, 28, company, title, po.poNumber);
+  const sigY = ensureSpaceForBlock(doc, blockEndY + 7, 28, company, title, po.poNumber);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.8);
   doc.setTextColor(71, 85, 105);
@@ -774,51 +899,23 @@ export async function exportSalesOrderPdf(
     },
   });
 
-  let y = getLastAutoTableFinalY(doc, tableStartY) + 5;
-  y = ensureSpaceForBlock(doc, y, 56, company, title, so.soNumber);
+  const blockStartY = getLastAutoTableFinalY(doc, tableStartY) + 5;
+  const termsSummary = buildOrderTermsSummaryForSo(so, customer, warehouse);
+  const blockEndY = drawBottomTermsAndTotalsPdf(
+    doc,
+    blockStartY,
+    termsSummary,
+    [
+      { label: 'Subtotal', value: formatCurrency(so.subtotal ?? so.totalAmount, so.currency) },
+      { label: 'PPN', value: formatCurrency(so.taxAmount ?? 0, so.currency) },
+      { label: 'Grand Total', value: formatCurrency(so.totalAmount, so.currency), isGrandTotal: true },
+    ],
+    company,
+    title,
+    so.soNumber
+  );
 
-  let notesBottomY = y + 22;
-  if (so.notes) {
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.8);
-    doc.setTextColor(71, 85, 105);
-    doc.text('Catatan Sales Order:', 14, y + 3);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(15, 23, 42);
-    const noteLines = doc.splitTextToSize(so.notes, 96);
-    doc.text(noteLines, 14, y + 7.5);
-    notesBottomY = Math.max(notesBottomY, y + 7.5 + noteLines.length * 4);
-  }
-
-  doc.setFillColor(244, 247, 251);
-  doc.setDrawColor(216, 226, 239);
-  doc.roundedRect(118, y, 78, 22, 1.2, 1.2, 'FD');
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  doc.setTextColor(71, 85, 105);
-  doc.text('Subtotal', 122, y + 5.5);
-  doc.text(':', 143, y + 5.5);
-  doc.setTextColor(15, 23, 42);
-  doc.text(formatCurrency(so.subtotal ?? so.totalAmount, so.currency), 192, y + 5.5, { align: 'right' });
-
-  doc.setTextColor(71, 85, 105);
-  doc.text('PPN', 122, y + 10.8);
-  doc.text(':', 143, y + 10.8);
-  doc.setTextColor(15, 23, 42);
-  doc.text(formatCurrency(so.taxAmount ?? 0, so.currency), 192, y + 10.8, { align: 'right' });
-
-  doc.setDrawColor(203, 213, 225);
-  doc.line(122, y + 13.5, 192, y + 13.5);
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8.8);
-  doc.setTextColor(11, 27, 58);
-  doc.text('Grand Total', 122, y + 18.5);
-  doc.text(':', 143, y + 18.5);
-  doc.text(formatCurrency(so.totalAmount, so.currency), 192, y + 18.5, { align: 'right' });
-
-  const sigY = ensureSpaceForBlock(doc, notesBottomY + 7, 28, company, title, so.soNumber);
+  const sigY = ensureSpaceForBlock(doc, blockEndY + 7, 28, company, title, so.soNumber);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.8);
   doc.setTextColor(71, 85, 105);
@@ -1296,7 +1393,14 @@ export async function exportSalesQuotationPdf(
       { label: 'Gudang Asal', value: warehouse?.name || qt.warehouseName || qt.warehouseId },
       { label: 'Tanggal Terbit', value: (qt.createdAt || '').slice(0, 10) || '-' },
       { label: 'Berlaku Hingga', value: qt.validUntil },
-      { label: 'Syarat Bayar', value: customer?.paymentScheme || 'CBD' },
+      {
+        label: 'Syarat Bayar',
+        value: resolvePaymentTermDisplay(
+          qt.paymentTerm,
+          qt.paymentTermCustom,
+          customer?.paymentScheme || 'CBD'
+        ),
+      },
     ]
   );
 
@@ -1326,55 +1430,26 @@ export async function exportSalesQuotationPdf(
     },
   });
 
-  let y = getLastAutoTableFinalY(doc, tableStartY) + 5;
-  y = ensureSpaceForBlock(doc, y, 56, company, title, qt.quotationNumber);
-
-  let notesBottomY = y + 22;
-  if (qt.notes) {
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.8);
-    doc.setTextColor(71, 85, 105);
-    doc.text('Catatan & Ketentuan:', 14, y + 3);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(15, 23, 42);
-    const noteLines = doc.splitTextToSize(qt.notes, 96);
-    doc.text(noteLines, 14, y + 7.5);
-    notesBottomY = Math.max(notesBottomY, y + 7.5 + noteLines.length * 4);
-  }
-
-  doc.setFillColor(244, 247, 251);
-  doc.setDrawColor(216, 226, 239);
-  doc.roundedRect(116, y, 80, 22, 1.2, 1.2, 'FD');
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  doc.setTextColor(71, 85, 105);
-  doc.text('Subtotal (DPP)', 120, y + 5.5);
-  doc.text(':', 150, y + 5.5);
-  doc.setTextColor(15, 23, 42);
-  doc.text(formatCurrency(qt.subtotal, qt.currency), 192, y + 5.5, { align: 'right' });
-
-  doc.setTextColor(71, 85, 105);
-  doc.text(
-    isCompanyPkp(company) ? `PPN ${getEffectiveTaxRatePercent(company)}%` : 'PPN (Non-PKP 0%)',
-    120,
-    y + 10.8
+  const blockStartY = getLastAutoTableFinalY(doc, tableStartY) + 5;
+  const termsSummary = buildOrderTermsSummaryForQuotation(qt, customer, warehouse);
+  const blockEndY = drawBottomTermsAndTotalsPdf(
+    doc,
+    blockStartY,
+    termsSummary,
+    [
+      { label: 'Subtotal (DPP)', value: formatCurrency(qt.subtotal, qt.currency) },
+      {
+        label: isCompanyPkp(company) ? `PPN ${getEffectiveTaxRatePercent(company)}%` : 'PPN (Non-PKP 0%)',
+        value: formatCurrency(qt.taxAmount, qt.currency),
+      },
+      { label: 'Total Penawaran', value: formatCurrency(qt.totalAmount, qt.currency), isGrandTotal: true },
+    ],
+    company,
+    title,
+    qt.quotationNumber
   );
-  doc.text(':', 150, y + 10.8);
-  doc.setTextColor(15, 23, 42);
-  doc.text(formatCurrency(qt.taxAmount, qt.currency), 192, y + 10.8, { align: 'right' });
 
-  doc.setDrawColor(203, 213, 225);
-  doc.line(120, y + 13.5, 192, y + 13.5);
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8.8);
-  doc.setTextColor(11, 27, 58);
-  doc.text('Total Penawaran', 120, y + 18.5);
-  doc.text(':', 150, y + 18.5);
-  doc.text(formatCurrency(qt.totalAmount, qt.currency), 192, y + 18.5, { align: 'right' });
-
-  const sigY = ensureSpaceForBlock(doc, notesBottomY + 7, 28, company, title, qt.quotationNumber);
+  const sigY = ensureSpaceForBlock(doc, blockEndY + 7, 28, company, title, qt.quotationNumber);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.8);
   doc.setTextColor(71, 85, 105);

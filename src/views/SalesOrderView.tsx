@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { OrderTermsFormSection } from '../components/OrderTermsFormSection';
 import { usePrintDocument } from '../components/PrintableDocumentModal';
 import { BulkActionBar, SelectCheckbox } from '../components/ui/BulkActions';
 import {
@@ -55,10 +56,20 @@ import {
   isCompanyPkp,
   isSafeDocumentUrl,
   isServiceOrderItem,
-  resolveBuyerTermDays,
   resolveEffectiveUnitPrice,
   validateBuyerForSalesOrder,
 } from '../models/erpLogic';
+import {
+  computeDueDateFromPaymentTerm,
+  computeValidityPeriodLabel,
+  getDefaultQuotationTerms,
+  getDefaultSalesDeliveryLocation,
+  getDefaultSalesIncoterm,
+  getDefaultSalesOrderTerms,
+  inheritTermsFromQuotation,
+  mapCustomerToPaymentTerm,
+  resolvePaymentTermDisplay,
+} from '../models/orderTerms';
 import {
   buildSalesInvoicePrintDoc,
   buildSalesOrderPrintDoc,
@@ -71,6 +82,7 @@ import type {
   CurrencyCode,
   CustomerPriceTier,
   GoodsReturn,
+  PaymentTermOption,
   QuotationStatus,
   SalesOrder,
   SalesQuotation,
@@ -153,11 +165,27 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
   };
 
   // Create SO form
-  const [customerId, setCustomerId] = useState(state.customers[0]?.id || '');
-  const [warehouseId, setWarehouseId] = useState(state.warehouses[0]?.id || '');
+  const initialBuyer = state.customers[0];
+  const initialWh = state.warehouses[0];
+  const initialBuyerTerm = mapCustomerToPaymentTerm(initialBuyer);
+  const initialSalesIncoterm = getDefaultSalesIncoterm();
+
+  const [customerId, setCustomerId] = useState(initialBuyer?.id || '');
+  const [warehouseId, setWarehouseId] = useState(initialWh?.id || '');
   const [currency, setCurrency] = useState<CurrencyCode>('IDR');
-  const [dueDate, setDueDate] = useState('2026-12-20');
+  const [dueDate, setDueDate] = useState(
+    computeDueDateFromPaymentTerm(initialBuyerTerm.paymentTerm, initialBuyerTerm.paymentTermCustom)
+  );
   const [notes, setNotes] = useState('');
+  const [soSourceQuotationId, setSoSourceQuotationId] = useState('');
+  const [soSourceQuotationNumber, setSoSourceQuotationNumber] = useState('');
+  const [soPaymentTerm, setSoPaymentTerm] = useState<PaymentTermOption>(initialBuyerTerm.paymentTerm);
+  const [soPaymentTermCustom, setSoPaymentTermCustom] = useState(initialBuyerTerm.paymentTermCustom);
+  const [soIncoterm, setSoIncoterm] = useState<string>(initialSalesIncoterm);
+  const [soDeliveryLocation, setSoDeliveryLocation] = useState<string>(
+    getDefaultSalesDeliveryLocation(initialSalesIncoterm, initialBuyer, initialWh)
+  );
+  const [soTerms, setSoTerms] = useState<string>(getDefaultSalesOrderTerms());
   const [draftItems, setDraftItems] = useState<DraftOrderRow[]>([
     {
       productId: state.products[0]?.id || '',
@@ -168,11 +196,20 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
 
   // Quotation modal state
   const [qtOpen, setQtOpen] = useState(false);
-  const [qtCustomerId, setQtCustomerId] = useState(state.customers[0]?.id || '');
-  const [qtWarehouseId, setQtWarehouseId] = useState(state.warehouses[0]?.id || '');
+  const [qtCustomerId, setQtCustomerId] = useState(initialBuyer?.id || '');
+  const [qtWarehouseId, setQtWarehouseId] = useState(initialWh?.id || '');
   const [qtCurrency, setQtCurrency] = useState<CurrencyCode>('IDR');
   const [qtValidUntil, setQtValidUntil] = useState('2026-12-15');
   const [qtNotes, setQtNotes] = useState('');
+  const [qtPaymentTerm, setQtPaymentTerm] = useState<PaymentTermOption>(initialBuyerTerm.paymentTerm);
+  const [qtPaymentTermCustom, setQtPaymentTermCustom] = useState(initialBuyerTerm.paymentTermCustom);
+  const [qtIncoterm, setQtIncoterm] = useState<string>(initialSalesIncoterm);
+  const [qtDeliveryLocation, setQtDeliveryLocation] = useState<string>(
+    getDefaultSalesDeliveryLocation(initialSalesIncoterm, initialBuyer, initialWh)
+  );
+  const [qtValidityPeriod, setQtValidityPeriod] = useState('14 Hari Kalender');
+  const [qtLeadTime, setQtLeadTime] = useState('3-5 Hari Kerja setelah PO diterima');
+  const [qtTerms, setQtTerms] = useState<string>(getDefaultQuotationTerms());
   const [qtItems, setQtItems] = useState<DraftOrderRow[]>([
     {
       productId: state.products[0]?.id || '',
@@ -397,8 +434,24 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
 
   const openCreateModal = () => {
     const cusId = customerId || state.customers[0]?.id || '';
+    const whId = warehouseId || state.warehouses[0]?.id || '';
     if (!customerId && cusId) setCustomerId(cusId);
-    if (!warehouseId && state.warehouses[0]) setWarehouseId(state.warehouses[0].id);
+    if (!warehouseId && whId) setWarehouseId(whId);
+    const cus = state.customers.find((c) => c.id === cusId);
+    const wh = state.warehouses.find((w) => w.id === whId);
+    const mapped = mapCustomerToPaymentTerm(cus);
+    const inc = getDefaultSalesIncoterm();
+
+    setNotes('');
+    setSoSourceQuotationId('');
+    setSoSourceQuotationNumber('');
+    setSoPaymentTerm(mapped.paymentTerm);
+    setSoPaymentTermCustom(mapped.paymentTermCustom);
+    setDueDate(computeDueDateFromPaymentTerm(mapped.paymentTerm, mapped.paymentTermCustom));
+    setSoIncoterm(inc);
+    setSoDeliveryLocation(getDefaultSalesDeliveryLocation(inc, cus, wh));
+    setSoTerms(getDefaultSalesOrderTerms());
+
     const baseItems: DraftOrderRow[] =
       (!draftItems[0]?.productId || draftItems.length === 0) && state.products[0]
         ? [{ productId: state.products[0].id, qty: 5, unitPrice: state.products[0].sellPrice || 135000 }]
@@ -407,10 +460,67 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
     setCreateOpen(true);
   };
 
+  const applyQuotationToCreateSo = (quotationId: string) => {
+    setSoSourceQuotationId(quotationId);
+    if (!quotationId) {
+      setSoSourceQuotationNumber('');
+      return;
+    }
+    const qt = state.salesQuotations.find((q) => q.id === quotationId);
+    if (!qt) return;
+    const cus = state.customers.find((c) => c.id === qt.customerId);
+    const wh = state.warehouses.find((w) => w.id === qt.warehouseId);
+    const inherited = inheritTermsFromQuotation(qt, cus, wh);
+
+    setCustomerId(qt.customerId);
+    setWarehouseId(qt.warehouseId);
+    setCurrency(qt.currency);
+    setSoSourceQuotationNumber(qt.quotationNumber);
+    setSoPaymentTerm(inherited.paymentTerm);
+    setSoPaymentTermCustom(inherited.paymentTermCustom);
+    setDueDate(
+      computeDueDateFromPaymentTerm(inherited.paymentTerm, inherited.paymentTermCustom)
+    );
+    setSoIncoterm(inherited.incoterm);
+    setSoDeliveryLocation(inherited.deliveryLocation);
+    setSoTerms(inherited.termsAndConditions);
+    setNotes(qt.notes || '');
+    setDraftItems(
+      qt.items.map((it) => ({
+        productId: it.productId,
+        qty: it.qty,
+        unitPrice: it.unitPrice,
+        isService: it.isService,
+        isManualService: Boolean(it.isService && it.sku === 'SRV-MANUAL'),
+        productName: it.productName,
+        sku: it.sku,
+        uomCode: it.uomCode,
+      }))
+    );
+  };
+
   const openQuotationModal = () => {
     const cusId = qtCustomerId || state.customers[0]?.id || '';
+    const whId = qtWarehouseId || state.warehouses[0]?.id || '';
     if (!qtCustomerId && cusId) setQtCustomerId(cusId);
-    if (!qtWarehouseId && state.warehouses[0]) setQtWarehouseId(state.warehouses[0].id);
+    if (!qtWarehouseId && whId) setQtWarehouseId(whId);
+    const cus = state.customers.find((c) => c.id === cusId);
+    const wh = state.warehouses.find((w) => w.id === whId);
+    const mapped = mapCustomerToPaymentTerm(cus);
+    const inc = getDefaultSalesIncoterm();
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const defaultValid = new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10);
+
+    setQtNotes('');
+    setQtValidUntil(defaultValid);
+    setQtValidityPeriod(computeValidityPeriodLabel(todayIso, defaultValid));
+    setQtLeadTime('3-5 Hari Kerja setelah PO diterima');
+    setQtPaymentTerm(mapped.paymentTerm);
+    setQtPaymentTermCustom(mapped.paymentTermCustom);
+    setQtIncoterm(inc);
+    setQtDeliveryLocation(getDefaultSalesDeliveryLocation(inc, cus, wh));
+    setQtTerms(getDefaultQuotationTerms());
+
     const baseItems: DraftOrderRow[] =
       (!qtItems[0]?.productId || qtItems.length === 0) && state.products[0]
         ? [{ productId: state.products[0].id, qty: 10, unitPrice: state.products[0].sellPrice || 135000 }]
@@ -1704,6 +1814,13 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                 currency,
                 dueDate,
                 notes,
+                paymentTerm: soPaymentTerm,
+                paymentTermCustom: soPaymentTermCustom,
+                incoterm: soIncoterm,
+                deliveryLocation: soDeliveryLocation,
+                termsAndConditions: soTerms,
+                quotationId: soSourceQuotationId || undefined,
+                quotationNumber: soSourceQuotationNumber || undefined,
                 items: draftItems,
                 confirmImmediately: stockCheck.sufficient,
               });
@@ -1715,8 +1832,32 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
             <DialogBody>
               {/* Section 1: Header Info */}
               <div className="space-y-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                  Informasi Pesanan
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    Informasi Pesanan
+                  </div>
+                  {state.salesQuotations.filter((q) => q.status !== 'Rejected').length > 0 && (
+                    <div className="flex items-center gap-2 text-xs">
+                      <Label htmlFor="so-copy-qt" className="text-[11px] text-slate-500 whitespace-nowrap">
+                        Salin dari Quotation:
+                      </Label>
+                      <NativeSelect
+                        id="so-copy-qt"
+                        value={soSourceQuotationId}
+                        onChange={(e) => applyQuotationToCreateSo(e.target.value)}
+                        className="h-8 min-h-[32px] md:min-h-[32px] text-xs w-56"
+                      >
+                        <option value="">-- Input Manual (Tanpa Ref. QT) --</option>
+                        {state.salesQuotations
+                          .filter((q) => q.status !== 'Rejected')
+                          .map((q) => (
+                            <option key={q.id} value={q.id}>
+                              {q.quotationNumber} · {q.customerName}
+                            </option>
+                          ))}
+                      </NativeSelect>
+                    </div>
+                  )}
                 </div>
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
                   <div className="space-y-1.5 col-span-2">
@@ -1729,14 +1870,17 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                         setCustomerId(nextId);
                         setDraftItems((prev) => applyContractPricesToItems(prev, nextId, currency));
                         const cus = state.customers.find((c) => c.id === nextId);
-                        if (cus) {
-                          const days = cus.paymentScheme
-                            ? resolveBuyerTermDays(cus.paymentScheme)
-                            : cus.paymentTermDays || 0;
-                          const nextDue = new Date(Date.now() + days * 86400000)
-                            .toISOString()
-                            .slice(0, 10);
-                          setDueDate(nextDue);
+                        const wh = state.warehouses.find((w) => w.id === warehouseId);
+                        if (cus && !soSourceQuotationId) {
+                          const mapped = mapCustomerToPaymentTerm(cus);
+                          setSoPaymentTerm(mapped.paymentTerm);
+                          setSoPaymentTermCustom(mapped.paymentTermCustom);
+                          setDueDate(
+                            computeDueDateFromPaymentTerm(mapped.paymentTerm, mapped.paymentTermCustom)
+                          );
+                          setSoDeliveryLocation(
+                            getDefaultSalesDeliveryLocation(soIncoterm, cus, wh)
+                          );
                         }
                       }}
                     >
@@ -1752,7 +1896,16 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                     <NativeSelect
                       id="so-wh"
                       value={warehouseId}
-                      onChange={(e) => setWarehouseId(e.target.value)}
+                      onChange={(e) => {
+                        const nextWhId = e.target.value;
+                        setWarehouseId(nextWhId);
+                        if (soIncoterm.startsWith('EXW')) {
+                          const wh = state.warehouses.find((w) => w.id === nextWhId);
+                          setSoDeliveryLocation(
+                            getDefaultSalesDeliveryLocation(soIncoterm, selectedCustomer, wh)
+                          );
+                        }
+                      }}
                     >
                       {state.warehouses.map((w) => (
                         <option key={w.id} value={w.id}>
@@ -2091,15 +2244,74 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
 
               {/* Section 3: Notes */}
               <div className="border-t border-slate-100 pt-5 space-y-1.5">
-                <Label htmlFor="so-notes">Catatan Order (Opsional)</Label>
+                <Label htmlFor="so-notes">Catatan Order Tambahan (Opsional)</Label>
                 <Textarea
                   id="so-notes"
-                  placeholder="Instruksi pengiriman, jadwal bongkar, atau catatan tambahan..."
+                  placeholder="Instruksi pengiriman internal, jadwal bongkar, atau catatan tambahan..."
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  className="min-h-[72px]"
+                  className="min-h-[64px]"
                 />
               </div>
+
+              {/* Section 4: Footer Left (Terms & Conditions) + Right (Ringkasan Total) */}
+              <OrderTermsFormSection
+                idPrefix="so"
+                docType="SALES_ORDER"
+                paymentTerm={soPaymentTerm}
+                onPaymentTermChange={(term) => {
+                  setSoPaymentTerm(term);
+                  if (term !== 'Custom') {
+                    setSoPaymentTermCustom('');
+                    setDueDate(computeDueDateFromPaymentTerm(term));
+                  }
+                }}
+                paymentTermCustom={soPaymentTermCustom}
+                onPaymentTermCustomChange={(val) => {
+                  setSoPaymentTermCustom(val);
+                  setDueDate(computeDueDateFromPaymentTerm('Custom', val));
+                }}
+                incoterm={soIncoterm}
+                onIncotermChange={(nextInc) => {
+                  setSoIncoterm(nextInc);
+                  const wh = state.warehouses.find((w) => w.id === warehouseId);
+                  setSoDeliveryLocation(
+                    getDefaultSalesDeliveryLocation(nextInc, selectedCustomer, wh)
+                  );
+                }}
+                deliveryLocation={soDeliveryLocation}
+                onDeliveryLocationChange={setSoDeliveryLocation}
+                termsAndConditions={soTerms}
+                onTermsAndConditionsChange={setSoTerms}
+                sourceBadge={
+                  soSourceQuotationNumber
+                    ? `Disalin dari ${soSourceQuotationNumber}`
+                    : selectedCustomer
+                    ? `Default Buyer (${selectedCustomer.code})`
+                    : undefined
+                }
+                onResetDefaultTerms={() => setSoTerms(getDefaultSalesOrderTerms())}
+                currency={currency}
+                subtotal={totals.subtotal}
+                taxAmount={totals.taxAmount}
+                totalAmount={totals.totalAmount}
+                companyIsPkp={companyIsPkp}
+                effectiveTaxRate={effectiveTaxRate}
+                extraTotalsNode={
+                  <div className="space-y-1 text-slate-600">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Kesiapan Stok</span>
+                      <span
+                        className={`font-semibold ${
+                          stockCheck.sufficient ? 'text-emerald-700' : 'text-amber-700'
+                        }`}
+                      >
+                        {stockCheck.sufficient ? 'Tersedia (Konfirmasi)' : 'Sebagian Kurang (Draft)'}
+                      </span>
+                    </div>
+                  </div>
+                }
+              />
             </DialogBody>
 
             <DialogFooter>
@@ -2279,17 +2491,22 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                           {deliverMode && (
                             <td className="py-2.5 px-3 text-right">
                               <Input
-                                type="number"
-                                min={0}
-                                max={rem}
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                aria-label={`Qty dikirim ${it.sku}`}
                                 value={deliverQtys[it.productId] ?? '0'}
-                                onChange={(e) =>
+                                onChange={(e) => {
+                                  const clean = sanitizeDigits(e.target.value);
+                                  const clamped = clean
+                                    ? String(Math.min(rem, Number(clean)))
+                                    : '0';
                                   setDeliverQtys((prev) => ({
                                     ...prev,
-                                    [it.productId]: e.target.value,
-                                  }))
-                                }
-                                className="h-9 w-24 ml-auto text-right font-mono"
+                                    [it.productId]: clamped,
+                                  }));
+                                }}
+                                className="h-9 w-24 ml-auto text-right font-mono tabular-nums"
                               />
                             </td>
                           )}
@@ -2299,6 +2516,78 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                   </tbody>
                 </table>
               </div>
+
+              {/* Terms & Conditions + Ringkasan Total inside SO Detail */}
+              {!deliverMode && (
+                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(240px,0.8fr)] gap-3.5 items-start">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-bold uppercase tracking-wider text-[11px] text-[#0B1B3A]">
+                        Terms &amp; Conditions
+                      </span>
+                      {selectedSo.quotationNumber && (
+                        <span className="font-mono text-[11px] font-semibold text-[#154C7E] bg-[#EBF3FA] px-2 py-0.5 rounded">
+                          Ref. {selectedSo.quotationNumber}
+                        </span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-[11.5px]">
+                      <div>
+                        <span className="text-slate-500">Payment Term: </span>
+                        <strong className="text-[#0B1B3A]">
+                          {resolvePaymentTermDisplay(
+                            selectedSo.paymentTerm,
+                            selectedSo.paymentTermCustom,
+                            selectedSoCustomer?.paymentScheme || 'CBD'
+                          )}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Incoterms: </span>
+                        <strong className="text-[#0B1B3A]">
+                          {selectedSo.incoterm || getDefaultSalesIncoterm()}
+                        </strong>
+                      </div>
+                      <div className="sm:col-span-2">
+                        <span className="text-slate-500">Lokasi Pengiriman: </span>
+                        <strong className="text-[#0B1B3A]">
+                          {selectedSo.deliveryLocation ||
+                            selectedSoCustomer?.shippingAddress ||
+                            selectedSoCustomer?.address ||
+                            '-'}
+                        </strong>
+                      </div>
+                    </div>
+                    <div className="whitespace-pre-wrap text-[11.5px] text-slate-700 leading-relaxed">
+                      {selectedSo.termsAndConditions || getDefaultSalesOrderTerms()}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-[#D8E2EF] bg-[#F4F7FB] p-3.5 space-y-1.5 text-xs">
+                    <div className="font-bold uppercase tracking-wider text-[11px] text-[#0B1B3A]">
+                      Ringkasan Total
+                    </div>
+                    <div className="flex justify-between text-slate-600">
+                      <span>Subtotal</span>
+                      <span className="font-mono font-semibold text-[#0B1B3A]">
+                        {formatCurrency(selectedSo.subtotal ?? selectedSo.totalAmount, selectedSo.currency)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-slate-600">
+                      <span>PPN</span>
+                      <span className="font-mono font-semibold text-[#0B1B3A]">
+                        {formatCurrency(selectedSo.taxAmount ?? 0, selectedSo.currency)}
+                      </span>
+                    </div>
+                    <div className="border-t border-slate-300 pt-1.5 flex justify-between font-bold text-sm text-[#0B1B3A]">
+                      <span>Grand Total</span>
+                      <span className="font-mono">
+                        {formatCurrency(selectedSo.totalAmount, selectedSo.currency)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {selectedSo.podReceiverName && (
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2.5 text-xs text-emerald-900 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -2647,6 +2936,13 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                 currency: qtCurrency,
                 validUntil: qtValidUntil,
                 notes: qtNotes,
+                paymentTerm: qtPaymentTerm,
+                paymentTermCustom: qtPaymentTermCustom,
+                incoterm: qtIncoterm,
+                deliveryLocation: qtDeliveryLocation,
+                validityPeriod: qtValidityPeriod,
+                leadTime: qtLeadTime,
+                termsAndConditions: qtTerms,
                 items: qtItems,
                 sendImmediately: true,
               });
@@ -2668,6 +2964,16 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                         const cid = e.target.value;
                         setQtCustomerId(cid);
                         setQtItems((prev) => applyContractPricesToItems(prev, cid, qtCurrency));
+                        const cus = state.customers.find((c) => c.id === cid);
+                        const wh = state.warehouses.find((w) => w.id === qtWarehouseId);
+                        if (cus) {
+                          const mapped = mapCustomerToPaymentTerm(cus);
+                          setQtPaymentTerm(mapped.paymentTerm);
+                          setQtPaymentTermCustom(mapped.paymentTermCustom);
+                          setQtDeliveryLocation(
+                            getDefaultSalesDeliveryLocation(qtIncoterm, cus, wh)
+                          );
+                        }
                       }}
                     >
                       {state.customers.map((c) => (
@@ -2682,7 +2988,17 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                     <NativeSelect
                       id="qt-wh"
                       value={qtWarehouseId}
-                      onChange={(e) => setQtWarehouseId(e.target.value)}
+                      onChange={(e) => {
+                        const nextWhId = e.target.value;
+                        setQtWarehouseId(nextWhId);
+                        if (qtIncoterm.startsWith('EXW')) {
+                          const cus = state.customers.find((c) => c.id === qtCustomerId);
+                          const wh = state.warehouses.find((w) => w.id === nextWhId);
+                          setQtDeliveryLocation(
+                            getDefaultSalesDeliveryLocation(qtIncoterm, cus, wh)
+                          );
+                        }
+                      }}
                     >
                       {state.warehouses.map((w) => (
                         <option key={w.id} value={w.id}>
@@ -2713,7 +3029,12 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                       type="date"
                       required
                       value={qtValidUntil}
-                      onChange={(e) => setQtValidUntil(e.target.value)}
+                      onChange={(e) => {
+                        const nextValid = e.target.value;
+                        setQtValidUntil(nextValid);
+                        const todayIso = new Date().toISOString().slice(0, 10);
+                        setQtValidityPeriod(computeValidityPeriodLabel(todayIso, nextValid));
+                      }}
                     />
                   </div>
                 </div>
@@ -2935,15 +3256,51 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
               </div>
 
               <div className="border-t border-slate-100 pt-5 space-y-1.5">
-                <Label htmlFor="qt-notes">Ketentuan &amp; Catatan Penawaran</Label>
+                <Label htmlFor="qt-notes">Catatan Tambahan Penawaran (Opsional)</Label>
                 <Textarea
                   id="qt-notes"
-                  placeholder="Masa berlaku harga, syarat pengiriman, atau ketentuan pembayaran..."
+                  placeholder="Catatan tambahan khusus penawaran untuk buyer..."
                   value={qtNotes}
                   onChange={(e) => setQtNotes(e.target.value)}
-                  className="min-h-[72px]"
+                  className="min-h-[64px]"
                 />
               </div>
+
+              {/* Footer Left (Terms & Conditions + Validity Period + Lead Time) + Right (Ringkasan Total) */}
+              <OrderTermsFormSection
+                idPrefix="qt"
+                docType="QUOTATION"
+                paymentTerm={qtPaymentTerm}
+                onPaymentTermChange={(term) => {
+                  setQtPaymentTerm(term);
+                  if (term !== 'Custom') setQtPaymentTermCustom('');
+                }}
+                paymentTermCustom={qtPaymentTermCustom}
+                onPaymentTermCustomChange={setQtPaymentTermCustom}
+                incoterm={qtIncoterm}
+                onIncotermChange={(nextInc) => {
+                  setQtIncoterm(nextInc);
+                  const cus = state.customers.find((c) => c.id === qtCustomerId);
+                  const wh = state.warehouses.find((w) => w.id === qtWarehouseId);
+                  setQtDeliveryLocation(getDefaultSalesDeliveryLocation(nextInc, cus, wh));
+                }}
+                deliveryLocation={qtDeliveryLocation}
+                onDeliveryLocationChange={setQtDeliveryLocation}
+                validityPeriod={qtValidityPeriod}
+                onValidityPeriodChange={setQtValidityPeriod}
+                leadTime={qtLeadTime}
+                onLeadTimeChange={setQtLeadTime}
+                termsAndConditions={qtTerms}
+                onTermsAndConditionsChange={setQtTerms}
+                sourceBadge="Penawaran B2B Standar"
+                onResetDefaultTerms={() => setQtTerms(getDefaultQuotationTerms())}
+                currency={qtCurrency}
+                subtotal={qtTotals.subtotal}
+                taxAmount={qtTotals.taxAmount}
+                totalAmount={qtTotals.totalAmount}
+                companyIsPkp={companyIsPkp}
+                effectiveTaxRate={effectiveTaxRate}
+              />
             </DialogBody>
 
             <DialogFooter>

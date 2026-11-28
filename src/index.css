@@ -66,7 +66,8 @@
 .print-doc-portal {
   position: fixed;
   inset: 0;
-  z-index: 90;
+  z-index: 120;
+  pointer-events: auto !important;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -298,7 +299,8 @@
 }
 
 .print-doc-notes-box,
-.print-doc-bank-box {
+.print-doc-bank-box,
+.print-doc-terms-box {
   background-color: #f4f7fb;
   border: 1px solid #d8e2ef;
   border-radius: 4px;
@@ -306,13 +308,60 @@
   font-size: var(--print-font-body);
 }
 
+.print-doc-terms-box {
+  background-color: #f8fafc;
+}
+
+.print-doc-terms-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.print-doc-terms-kv {
+  display: grid;
+  grid-template-columns: 92px 10px minmax(0, 1fr);
+  gap: 4px;
+  align-items: start;
+  font-size: var(--print-font-table);
+  line-height: 1.38;
+}
+
+.print-doc-po-notice {
+  margin: 6px 0;
+  padding: 5px 8px;
+  border-radius: 3px;
+  background-color: #fef3c7;
+  border: 1px solid #f59e0b;
+  color: #78350f;
+  font-size: var(--print-font-small);
+  line-height: 1.4;
+}
+
+.print-doc-terms-body {
+  font-size: var(--print-font-small);
+  color: #1e293b;
+  line-height: 1.45;
+}
+
+.print-doc-terms-extra {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px dashed #cbd5e1;
+  font-size: var(--print-font-small);
+  color: #334155;
+}
+
 .print-doc-notes-title {
   font-weight: 700;
   font-size: var(--print-font-small);
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: #475569;
-  margin-bottom: 4px;
+  color: #0b1b3a;
+  margin-bottom: 5px;
 }
 
 .print-doc-notes-text {

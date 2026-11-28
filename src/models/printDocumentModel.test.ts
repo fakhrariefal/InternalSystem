@@ -22,23 +22,39 @@ test('Unified print model generates aligned metadata, totals, full notes, and bo
   assert.ok(po && qt && arInv && apInv);
 
   const poSupplier = seed.suppliers.find((s) => s.id === po.supplierId);
-  const poDoc = buildPurchaseOrderPrintDoc(po, seed.settings, poSupplier);
+  const poWh = seed.warehouses.find((w) => w.id === po.warehouseId);
+  const poDoc = buildPurchaseOrderPrintDoc(po, seed.settings, poSupplier, poWh);
   assert.equal(poDoc.docType, 'PURCHASE_ORDER');
   assert.equal(poDoc.documentNumber, po.poNumber);
   assert.equal(poDoc.leftMeta.length, 4);
   assert.equal(poDoc.rightMeta.length, 4);
   assert.equal(poDoc.totals?.length, 3);
+  assert.ok(poDoc.termsSection);
+  assert.ok(poDoc.termsSection.mandatoryNotice?.includes('Nomor PO'));
+  assert.ok(poDoc.termsSection.mandatoryNotice?.includes('Surat Jalan/BAST'));
+  assert.ok(poDoc.termsSection.mandatoryNotice?.includes('Invoice'));
   assert.equal(poDoc.qrVerification.code, po.poNumber);
   assert.ok(poDoc.qrVerification.payload.startsWith('DHI-PO|'));
 
   const qtCustomer = seed.customers.find((c) => c.id === qt.customerId);
   const qtWh = seed.warehouses.find((w) => w.id === qt.warehouseId);
-  const qtLongNotes = { ...qt, notes: 'Baris 1\nBaris 2\nBaris 3\nBaris 4\nBaris 5 Syarat Pengiriman Lengkap' };
+  const qtLongNotes = {
+    ...qt,
+    paymentTerm: 'Custom' as const,
+    paymentTermCustom: 'DP 40% + TOP 21 Hari Kalender',
+    validityPeriod: '21 Hari Kalender',
+    leadTime: '4-6 Hari Kerja',
+    notes: 'Baris 1\nBaris 2\nBaris 3\nBaris 4\nBaris 5 Syarat Pengiriman Lengkap',
+  };
   const qtDoc = buildSalesQuotationPrintDoc(qtLongNotes, seed.settings, qtCustomer, qtWh);
   assert.equal(qtDoc.docType, 'QUOTATION');
+  assert.equal(qtDoc.rightMeta[3]?.value, 'DP 40% + TOP 21 Hari Kalender');
   assert.equal(qtDoc.totals?.[2]?.label, 'Total Penawaran');
   assert.equal(qtDoc.totals?.[2]?.isGrandTotal, true);
-  assert.ok(qtDoc.notesText?.includes('Baris 5 Syarat Pengiriman Lengkap'));
+  assert.ok(qtDoc.termsSection);
+  assert.ok(qtDoc.termsSection.metaRows.some((r) => r.label === 'Validity Period' && r.value.includes('21 Hari Kalender')));
+  assert.ok(qtDoc.termsSection.metaRows.some((r) => r.label === 'Lead Time' && r.value === '4-6 Hari Kerja'));
+  assert.ok(qtDoc.termsSection.additionalNotes?.includes('Baris 5 Syarat Pengiriman Lengkap'));
   assert.equal(qtDoc.qrVerification.code, qt.quotationNumber);
 
   const invCustomer = seed.customers.find((c) => c.id === arInv.counterpartyId);
@@ -70,6 +86,9 @@ test('Unified print model generates SO, Surat Jalan, Kwitansi, and Verified Part
   const soDoc = buildSalesOrderPrintDoc(so, seed.settings, customer, wh);
   assert.equal(soDoc.docType, 'SALES_ORDER');
   assert.equal(soDoc.rows.length, so.items.length);
+  assert.ok(soDoc.termsSection);
+  assert.ok(soDoc.termsSection.metaRows.some((r) => r.label === 'Payment Term'));
+  assert.ok(soDoc.termsSection.metaRows.some((r) => r.label === 'Incoterms'));
 
   const sjDoc = buildSuratJalanPrintDoc(so, seed.settings, customer, wh);
   assert.equal(sjDoc.docType, 'SURAT_JALAN');

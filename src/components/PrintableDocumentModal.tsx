@@ -162,10 +162,38 @@ export function PrintableDocumentSheet({ data }: { data: PrintableDocumentData }
         </table>
       </section>
 
-      {/* Summary / Bank Transfer / Notes Section */}
-      {(data.bankInfo || data.notesText || (data.totals && data.totals.length > 0)) && (
+      {/* Summary / Terms & Conditions / Bank Transfer / Notes Section */}
+      {(data.termsSection || data.bankInfo || data.notesText || (data.totals && data.totals.length > 0)) && (
         <section className="print-doc-summary-grid">
           <div className="space-y-3">
+            {data.termsSection && (
+              <div className="print-doc-terms-box" data-testid="print-terms-section">
+                <div className="print-doc-notes-title">{data.termsSection.heading}</div>
+                <div className="print-doc-terms-meta">
+                  {data.termsSection.metaRows.map((mRow, idx) => (
+                    <div key={`tm_${idx}_${mRow.label}`} className="print-doc-terms-kv">
+                      <span className="print-doc-meta-label">{mRow.label}</span>
+                      <span className="print-doc-colon" aria-hidden="true">:</span>
+                      <span className="print-doc-meta-value">{mRow.value || '-'}</span>
+                    </div>
+                  ))}
+                </div>
+                {data.termsSection.mandatoryNotice && (
+                  <div className="print-doc-po-notice">
+                    <strong>Catatan Wajib:</strong> {data.termsSection.mandatoryNotice}
+                  </div>
+                )}
+                <div className="print-doc-notes-text print-doc-terms-body">
+                  {data.termsSection.termsText}
+                </div>
+                {data.termsSection.additionalNotes && (
+                  <div className="print-doc-terms-extra">
+                    <span className="font-semibold text-[#475569]">Catatan Tambahan: </span>
+                    <span className="whitespace-pre-wrap">{data.termsSection.additionalNotes}</span>
+                  </div>
+                )}
+              </div>
+            )}
             {data.bankInfo && (
               <div className="print-doc-bank-box">
                 <div className="print-doc-notes-title">{data.bankInfo.heading}</div>
@@ -311,11 +339,14 @@ export function PrintDocumentProvider({ children }: { children: ReactNode }) {
     }
     document.body.classList.add('printing-document-modal');
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closePrintPreview();
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        closePrintPreview();
+      }
     };
-    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keydown', onKeyDown, true);
     return () => {
-      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keydown', onKeyDown, true);
       document.body.classList.remove('printing-document-modal');
     };
   }, [closePrintPreview, request]);
@@ -331,6 +362,7 @@ export function PrintDocumentProvider({ children }: { children: ReactNode }) {
             role="dialog"
             aria-modal="true"
             aria-label={`Pratinjau Cetak ${request.data.documentNumber}`}
+            onPointerDown={(e) => e.stopPropagation()}
           >
             <div
               className={`print-doc-toolbar no-print ${
