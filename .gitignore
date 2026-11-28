@@ -8,5 +8,4 @@ coverage/
 .env.*
 !.env.example
 .playwright-cli/
-DRAFT_firestore.rules
 .aistudio/
