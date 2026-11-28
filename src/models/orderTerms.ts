@@ -7,6 +7,7 @@ import type {
   SalesOrder,
   SalesQuotation,
   Supplier,
+  VendorRfq,
   Warehouse,
 } from './types';
 
@@ -52,6 +53,26 @@ export function getDefaultPurchaseOrderTerms(): string {
     '2. Barang/jasa yang dikirim harus sesuai spesifikasi teknis, kuantitas, dan standar kualitas pada Purchase Order ini.',
     '3. Penerima berhak menolak pengiriman apabila barang rusak, tidak sesuai spesifikasi, atau melewati target kirim tanpa persetujuan tertulis.',
     '4. Pembayaran diproses setelah seluruh dokumen penagihan (Invoice, Faktur Pajak, Surat Jalan/BAST ber-Nomor PO) dinyatakan lengkap.',
+  ].join('\n');
+}
+
+export function getDefaultQuotationOpeningText(companyName?: string): string {
+  const corp =
+    (companyName || 'PT Domestiq Hub Indonesia').trim() || 'PT Domestiq Hub Indonesia';
+  return `Dengan hormat,\n\nSehubungan dengan kebutuhan pengadaan barang dan/atau jasa Bapak/Ibu, bersama surat ini kami dari ${corp} menyampaikan penawaran harga resmi beserta rincian spesifikasi, kuantitas, serta syarat dan ketentuan sebagai berikut:`;
+}
+
+export function getDefaultRfqOpeningText(companyName?: string): string {
+  const corp =
+    (companyName || 'PT Domestiq Hub Indonesia').trim() || 'PT Domestiq Hub Indonesia';
+  return `Dengan hormat,\n\nSehubungan dengan rencana pengadaan barang dan/atau jasa perusahaan kami (${corp}), kami mengundang Bapak/Ibu untuk mengajukan surat penawaran harga resmi (Quotation) sesuai rincian item, kuantitas, serta batas waktu pengajuan berikut ini:`;
+}
+
+export function getDefaultRfqTerms(): string {
+  return [
+    '1. Mohon mencantumkan harga satuan terbaik (sebelum/sesudah PPN), ketersediaan stok, serta estimasi Lead Time pengiriman.',
+    '2. Surat penawaran resmi agar mencantumkan masa berlaku penawaran (Validity Period), Incoterms, dan syarat pembayaran (Payment Term).',
+    '3. Penawaran harap dikirimkan paling lambat sesuai Batas Waktu (Deadline) dengan mencantumkan Nomor RFQ ini sebagai referensi.',
   ].join('\n');
 }
 
@@ -432,5 +453,31 @@ export function buildOrderTermsSummaryForQuotation(
     ],
     termsText: (qt.termsAndConditions || getDefaultQuotationTerms()).trim(),
     additionalNotes: qt.notes?.trim() ? qt.notes.trim() : undefined,
+  };
+}
+
+export function buildOrderTermsSummaryForRfq(
+  rfq: Pick<VendorRfq, 'warehouseId' | 'warehouseName' | 'deadlineDate' | 'invitedSupplierIds' | 'notes'>,
+  suppliers: Array<Pick<Supplier, 'id' | 'name'>> = [],
+  warehouse?: Pick<Warehouse, 'address' | 'name'>
+): OrderTermsSectionSummary {
+  const invitedSuppliers = suppliers.filter((s) => rfq.invitedSupplierIds.includes(s.id));
+  const invitedText =
+    invitedSuppliers.length > 0
+      ? invitedSuppliers.map((s) => s.name).join(', ')
+      : rfq.invitedSupplierIds.length > 0
+      ? `${rfq.invitedSupplierIds.length} Supplier Terundang`
+      : 'Terbuka (Umum)';
+
+  return {
+    heading: 'Ketentuan Pengajuan Penawaran (RFQ)',
+    metaRows: [
+      { label: 'Gudang Tujuan', value: warehouse?.name || rfq.warehouseName || rfq.warehouseId },
+      { label: 'Lokasi Gudang', value: warehouse?.address || '-' },
+      { label: 'Batas Penawaran', value: rfq.deadlineDate },
+      { label: 'Vendor Terundang', value: invitedText },
+    ],
+    termsText: getDefaultRfqTerms(),
+    additionalNotes: rfq.notes?.trim() ? rfq.notes.trim() : undefined,
   };
 }

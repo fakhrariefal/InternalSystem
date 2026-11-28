@@ -486,7 +486,7 @@ service cloud.firestore {
 
     function isValidSalesQuotation(data) {
       return data.keys().hasAll(['id', 'quotationNumber', 'customerId', 'warehouseId', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'createdBy', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'quotationNumber', 'customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'validityPeriod', 'leadTime', 'paymentTerm', 'paymentTermCustom', 'incoterm', 'deliveryLocation', 'termsAndConditions', 'notes', 'convertedSoId', 'convertedSoNumber', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'quotationNumber', 'customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'validityPeriod', 'leadTime', 'paymentTerm', 'paymentTermCustom', 'incoterm', 'deliveryLocation', 'termsAndConditions', 'openingText', 'notes', 'convertedSoId', 'convertedSoNumber', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
         && isValidId(data.id)
         && data.quotationNumber is string && data.quotationNumber.size() >= 4 && data.quotationNumber.size() <= 40
         && isValidId(data.customerId)
@@ -507,6 +507,7 @@ service cloud.firestore {
         && (!('incoterm' in data) || (data.incoterm is string && data.incoterm.size() <= 80))
         && (!('deliveryLocation' in data) || (data.deliveryLocation is string && data.deliveryLocation.size() <= 300))
         && (!('termsAndConditions' in data) || (data.termsAndConditions is string && data.termsAndConditions.size() <= 2000))
+        && (!('openingText' in data) || (data.openingText is string && data.openingText.size() <= 1000))
         && (!('notes' in data) || (data.notes is string && data.notes.size() <= 600))
         && (!('convertedSoId' in data) || (data.convertedSoId is string && data.convertedSoId.size() <= 128))
         && (!('convertedSoNumber' in data) || (data.convertedSoNumber is string && data.convertedSoNumber.size() <= 40))
@@ -518,7 +519,7 @@ service cloud.firestore {
 
     function isValidVendorRfq(data) {
       return data.keys().hasAll(['id', 'rfqNumber', 'title', 'warehouseId', 'deadlineDate', 'status', 'items', 'invitedSupplierIds', 'quotes', 'createdBy', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'rfqNumber', 'title', 'warehouseId', 'warehouseName', 'deadlineDate', 'status', 'items', 'invitedSupplierIds', 'quotes', 'awardedSupplierId', 'awardedPoId', 'awardedPoNumber', 'notes', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'rfqNumber', 'title', 'warehouseId', 'warehouseName', 'deadlineDate', 'status', 'items', 'invitedSupplierIds', 'quotes', 'awardedSupplierId', 'awardedPoId', 'awardedPoNumber', 'openingText', 'notes', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
         && isValidId(data.id)
         && data.rfqNumber is string && data.rfqNumber.size() >= 4 && data.rfqNumber.size() <= 40
         && data.title is string && data.title.size() >= 2 && data.title.size() <= 160
@@ -532,6 +533,7 @@ service cloud.firestore {
         && (!('awardedSupplierId' in data) || (data.awardedSupplierId is string && data.awardedSupplierId.size() <= 128))
         && (!('awardedPoId' in data) || (data.awardedPoId is string && data.awardedPoId.size() <= 128))
         && (!('awardedPoNumber' in data) || (data.awardedPoNumber is string && data.awardedPoNumber.size() <= 40))
+        && (!('openingText' in data) || (data.openingText is string && data.openingText.size() <= 1000))
         && (!('notes' in data) || (data.notes is string && data.notes.size() <= 600))
         && isValidId(data.createdBy)
         && (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 120))
@@ -1133,7 +1135,7 @@ service cloud.firestore {
         && incoming().createdBy == existing().createdBy
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'validityPeriod', 'leadTime', 'paymentTerm', 'paymentTermCustom', 'incoterm', 'deliveryLocation', 'termsAndConditions', 'notes', 'convertedSoId', 'convertedSoNumber', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['customerId', 'customerName', 'warehouseId', 'warehouseName', 'currency', 'status', 'items', 'subtotal', 'taxAmount', 'totalAmount', 'validUntil', 'validityPeriod', 'leadTime', 'paymentTerm', 'paymentTermCustom', 'incoterm', 'deliveryLocation', 'termsAndConditions', 'openingText', 'notes', 'convertedSoId', 'convertedSoNumber', 'updatedAt']);
       allow delete: if isDirektur() && isValidId(quotationId);
     }
 
@@ -1155,7 +1157,7 @@ service cloud.firestore {
         && incoming().createdBy == existing().createdBy
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'warehouseId', 'warehouseName', 'deadlineDate', 'status', 'items', 'invitedSupplierIds', 'quotes', 'awardedSupplierId', 'awardedPoId', 'awardedPoNumber', 'notes', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'warehouseId', 'warehouseName', 'deadlineDate', 'status', 'items', 'invitedSupplierIds', 'quotes', 'awardedSupplierId', 'awardedPoId', 'awardedPoNumber', 'openingText', 'notes', 'updatedAt']);
       allow delete: if isDirektur() && isValidId(rfqId);
     }
 

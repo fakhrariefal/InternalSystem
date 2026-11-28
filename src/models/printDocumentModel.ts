@@ -2,7 +2,10 @@ import { formatCurrency, getEffectiveTaxRatePercent, isCompanyPkp } from './erpL
 import {
   buildOrderTermsSummaryForPo,
   buildOrderTermsSummaryForQuotation,
+  buildOrderTermsSummaryForRfq,
   buildOrderTermsSummaryForSo,
+  getDefaultQuotationOpeningText,
+  getDefaultRfqOpeningText,
   resolvePaymentTermDisplay,
   type OrderTermsSectionSummary,
 } from './orderTerms';
@@ -16,6 +19,7 @@ import type {
   SalesQuotation,
   StockMovement,
   Supplier,
+  VendorRfq,
   Warehouse,
 } from './types';
 
@@ -23,6 +27,7 @@ export type PrintableDocumentType =
   | 'INVOICE'
   | 'QUOTATION'
   | 'PURCHASE_ORDER'
+  | 'VENDOR_RFQ'
   | 'SALES_ORDER'
   | 'SURAT_JALAN'
   | 'KWITANSI'
@@ -69,6 +74,7 @@ export interface PrintableDocumentData {
   company: CompanySettings;
   leftMeta: PrintMetadataRow[];
   rightMeta: PrintMetadataRow[];
+  openingText?: string;
   columns: PrintTableColumn[];
   rows: string[][];
   termsSection?: OrderTermsSectionSummary;
@@ -231,6 +237,7 @@ export function buildSalesQuotationPrintDoc(
         ),
       },
     ],
+    openingText: (qt.openingText || '').trim() || getDefaultQuotationOpeningText(company.companyName),
     columns: [
       { header: 'No', align: 'center', widthClass: 'w-9' },
       { header: 'SKU', align: 'left', widthClass: 'w-24', mono: true },
@@ -276,6 +283,72 @@ export function buildSalesQuotationPrintDoc(
       code: qt.quotationNumber,
       detailLine: `Customer: ${customer?.name || qt.customerName || '-'} | Berlaku s/d: ${qt.validUntil} | Total: ${formatCurrency(qt.totalAmount, qt.currency)}`,
       payload: `DHI-QT|${qt.quotationNumber}|${qt.customerName || qt.customerId}|${qt.totalAmount}|VALID:${qt.validUntil}`,
+    },
+  };
+}
+
+export function buildVendorRfqPrintDoc(
+  rfq: VendorRfq,
+  company: CompanySettings,
+  suppliers: Supplier[] = [],
+  warehouse?: Warehouse,
+  targetSupplier?: Supplier
+): PrintableDocumentData {
+  const invitedSuppliers = suppliers.filter((s) => rfq.invitedSupplierIds.includes(s.id));
+  const recipientDisplay = targetSupplier
+    ? targetSupplier.name
+    : invitedSuppliers.length > 0
+    ? invitedSuppliers.map((s) => s.name).join(', ')
+    : 'Vendor / Supplier Terundang';
+
+  return {
+    docType: 'VENDOR_RFQ',
+    documentTitle: 'PERMINTAAN PENAWARAN HARGA / REQUEST FOR QUOTATION (RFQ)',
+    documentNumber: rfq.rfqNumber,
+    filenameBase: rfq.rfqNumber,
+    company,
+    leftMeta: [
+      { label: 'Nomor RFQ', value: rfq.rfqNumber },
+      { label: 'Judul Pengadaan', value: rfq.title },
+      { label: 'Kepada Yth', value: recipientDisplay },
+      { label: 'Status RFQ', value: rfq.status },
+    ],
+    rightMeta: [
+      { label: 'Tanggal Terbit', value: (rfq.createdAt || '').slice(0, 10) || '-' },
+      { label: 'Batas Penawaran', value: rfq.deadlineDate || '-' },
+      { label: 'Gudang Tujuan', value: warehouse?.name || rfq.warehouseName || rfq.warehouseId },
+      { label: 'Mata Uang Acuan', value: 'IDR / USD (Sesuai Penawaran)' },
+    ],
+    openingText: (rfq.openingText || '').trim() || getDefaultRfqOpeningText(company.companyName),
+    columns: [
+      { header: 'No', align: 'center', widthClass: 'w-9' },
+      { header: 'SKU', align: 'left', widthClass: 'w-24', mono: true },
+      { header: 'Nama Barang / Spesifikasi', align: 'left' },
+      { header: 'Satuan', align: 'center', widthClass: 'w-16' },
+      { header: 'Qty Diminta', align: 'right', widthClass: 'w-24', bold: true, mono: true },
+      { header: 'Keterangan', align: 'left', widthClass: 'w-44' },
+    ],
+    rows: rfq.items.map((item, idx) => [
+      String(idx + 1),
+      item.sku,
+      item.productName,
+      item.uomCode,
+      String(item.qty),
+      'Mohon ajukan harga & lead time terbaik',
+    ]),
+    termsSection: buildOrderTermsSummaryForRfq(rfq, suppliers, warehouse),
+    signatures: [
+      { roleLabel: 'Diterbitkan Oleh (Procurement),', signerName: rfq.createdByName || 'Procurement Team' },
+      {
+        roleLabel: 'Mengetahui (Manager / Direktur),',
+        signerName: company.companyName || 'PT Domestiq Hub Indonesia',
+      },
+    ],
+    qrVerification: {
+      title: 'VERIFIKASI DIGITAL REQUEST FOR QUOTATION (RFQ)',
+      code: rfq.rfqNumber,
+      detailLine: `Judul: ${rfq.title} | Batas Penawaran: ${rfq.deadlineDate} | Item: ${rfq.items.length}`,
+      payload: `DHI-RFQ|${rfq.rfqNumber}|${rfq.title}|DEADLINE:${rfq.deadlineDate}|ITEMS:${rfq.items.length}|${rfq.status}`,
     },
   };
 }

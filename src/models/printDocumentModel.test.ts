@@ -9,6 +9,7 @@ import {
   buildSalesQuotationPrintDoc,
   buildSupplierRegistrationPrintDoc,
   buildSuratJalanPrintDoc,
+  buildVendorRfqPrintDoc,
   formatPartnerRegistrationNumber,
 } from './printDocumentModel';
 import { createInitialSeedState } from './seedData';
@@ -119,4 +120,55 @@ test('Unified print model generates SO, Surat Jalan, Kwitansi, and Verified Part
   assert.equal(formatPartnerRegistrationNumber('SUP-2026-009', 'sup-9', '2026-05-10'), 'REG-2026-009');
   assert.equal(formatPartnerRegistrationNumber('CUS-001', 'cust-1', '2026-05-02'), 'REG-2026-001');
   assert.equal(formatPartnerRegistrationNumber(undefined, 'sup-2', '2026-05-10'), 'REG-2026-002');
+});
+
+test('Vendor RFQ & Sales Quotation print docs render openingText and hide internal cost estimates on RFQ', () => {
+  const seed = createInitialSeedState();
+  const rfq = seed.vendorRfqs[0];
+  const qt = seed.salesQuotations[0];
+  assert.ok(rfq && qt);
+
+  const qtDefaultDoc = buildSalesQuotationPrintDoc(
+    { ...qt, openingText: undefined },
+    seed.settings,
+    seed.customers[0],
+    seed.warehouses[0]
+  );
+  assert.ok(qtDefaultDoc.openingText?.includes('Dengan hormat'));
+
+  const qtCustomDoc = buildSalesQuotationPrintDoc(
+    { ...qt, openingText: 'Dengan hormat, berikut penawaran spesial proyek Q4.' },
+    seed.settings,
+    seed.customers[0],
+    seed.warehouses[0]
+  );
+  assert.equal(qtCustomDoc.openingText, 'Dengan hormat, berikut penawaran spesial proyek Q4.');
+
+  const wh = seed.warehouses.find((w) => w.id === rfq.warehouseId);
+  const rfqDoc = buildVendorRfqPrintDoc(
+    { ...rfq, openingText: 'Dengan hormat, mohon penawaran harga terbaik untuk daftar berikut:' },
+    seed.settings,
+    seed.suppliers,
+    wh
+  );
+  assert.equal(rfqDoc.docType, 'VENDOR_RFQ');
+  assert.equal(rfqDoc.documentNumber, rfq.rfqNumber);
+  assert.equal(
+    rfqDoc.openingText,
+    'Dengan hormat, mohon penawaran harga terbaik untuk daftar berikut:'
+  );
+  assert.equal(rfqDoc.totals, undefined);
+  assert.ok(rfqDoc.termsSection);
+  assert.ok(rfqDoc.qrVerification.payload.startsWith('DHI-RFQ|'));
+  // Ensure internal buyPrice / unitPrice is never leaked into Vendor RFQ columns or rows
+  assert.equal(rfqDoc.columns.some((c) => c.header.toLowerCase().includes('harga')), false);
+  assert.equal(rfqDoc.rows.flat().some((cell) => cell.includes('1.250.000')), false);
+
+  const rfqFallbackDoc = buildVendorRfqPrintDoc(
+    { ...rfq, openingText: undefined },
+    seed.settings,
+    seed.suppliers,
+    wh
+  );
+  assert.ok(rfqFallbackDoc.openingText?.includes('Dengan hormat'));
 });

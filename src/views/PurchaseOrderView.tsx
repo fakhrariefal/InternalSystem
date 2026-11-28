@@ -62,12 +62,13 @@ import {
   getDefaultPoDeliveryLocation,
   getDefaultPoIncoterm,
   getDefaultPurchaseOrderTerms,
+  getDefaultRfqOpeningText,
   MANDATORY_PO_ATTACHMENT_NOTE,
   mapSupplierToPaymentTerm,
   resolvePaymentTermDisplay,
 } from '../models/orderTerms';
 import { hasPermission } from '../models/rbac';
-import { buildPurchaseOrderPrintDoc } from '../models/printDocumentModel';
+import { buildPurchaseOrderPrintDoc, buildVendorRfqPrintDoc } from '../models/printDocumentModel';
 import { createInitialSeedState } from '../models/seedData';
 import type {
   CurrencyCode,
@@ -81,6 +82,7 @@ import {
   exportPurchaseOrderCsv,
   exportPurchaseOrderPdf,
   exportTableToCsv,
+  exportVendorRfqPdf,
 } from '../services/exportService';
 
 function getPoStatusTone(status: PoStatus): 'neutral' | 'success' | 'warning' | 'danger' | 'info' {
@@ -215,6 +217,9 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
   const [rfqTitle, setRfqTitle] = useState('');
   const [rfqWarehouseId, setRfqWarehouseId] = useState(state.warehouses[0]?.id || '');
   const [rfqDeadline, setRfqDeadline] = useState('2026-12-20');
+  const [rfqOpeningText, setRfqOpeningText] = useState<string>(() =>
+    getDefaultRfqOpeningText(state.settings.companyName)
+  );
   const [rfqNotes, setRfqNotes] = useState('');
   const [rfqSupplierIds, setRfqSupplierIds] = useState<string[]>(
     state.suppliers.slice(0, 2).map((s) => s.id)
@@ -484,6 +489,7 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
               size="sm"
               onClick={() => {
                 if (!rfqWarehouseId && state.warehouses[0]) setRfqWarehouseId(state.warehouses[0].id);
+                setRfqOpeningText(getDefaultRfqOpeningText(state.settings.companyName));
                 if ((!rfqItems[0]?.productId || rfqItems.length === 0) && state.products[0]) {
                   setRfqItems([
                     {
@@ -1015,6 +1021,22 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          aria-label={`Cetak Preview RFQ ${rfq.rfqNumber}`}
+                          onClick={() => {
+                            const wh = state.warehouses.find((w) => w.id === rfq.warehouseId);
+                            openPrintPreview(
+                              buildVendorRfqPrintDoc(rfq, state.settings, state.suppliers, wh),
+                              () => exportVendorRfqPdf(rfq, state.settings, state.suppliers, wh)
+                            );
+                          }}
+                        >
+                          <Printer className="h-3.5 w-3.5 text-[#0B1B3A]" />
+                          Cetak Preview
+                        </Button>
                         {canRfq && rfq.status !== 'Awarded' && rfq.status !== 'Cancelled' && (
                           <Button
                             type="button"
@@ -1976,6 +1998,7 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                 title: rfqTitle,
                 warehouseId: rfqWarehouseId,
                 deadlineDate: rfqDeadline,
+                openingText: rfqOpeningText,
                 notes: rfqNotes,
                 invitedSupplierIds: rfqSupplierIds,
                 items: rfqItems,
@@ -1984,6 +2007,7 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
               if (ok) {
                 setRfqCreateOpen(false);
                 setRfqTitle('');
+                setRfqOpeningText(getDefaultRfqOpeningText(state.settings.companyName));
                 setRfqNotes('');
               }
             }}
@@ -2024,6 +2048,30 @@ export function PurchaseOrderView({ erp }: { erp: ErpController }) {
                     ))}
                   </NativeSelect>
                 </div>
+              </div>
+
+              <div className="border-t border-slate-100 pt-5 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor="rfq-opening">Kalimat Pembuka Surat RFQ</Label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setRfqOpeningText(getDefaultRfqOpeningText(state.settings.companyName))
+                    }
+                    className="text-[11px] font-semibold text-[#1B5E99] hover:underline cursor-pointer"
+                  >
+                    Reset Default
+                  </button>
+                </div>
+                <Textarea
+                  id="rfq-opening"
+                  rows={3}
+                  maxLength={1000}
+                  placeholder="Dengan hormat, kami mengundang Bapak/Ibu untuk mengajukan penawaran harga..."
+                  value={rfqOpeningText}
+                  onChange={(e) => setRfqOpeningText(e.target.value)}
+                  className="text-xs leading-relaxed"
+                />
               </div>
 
               <div className="border-t border-slate-100 pt-5 space-y-2">

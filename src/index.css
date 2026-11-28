@@ -251,6 +251,15 @@
   white-space: normal;
 }
 
+.print-doc-opening {
+  margin-top: 10px;
+  font-size: var(--print-font-body);
+  color: #1e293b;
+  line-height: 1.48;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .print-doc-table-wrap {
   margin-top: 12px;
   width: 100%;
@@ -296,6 +305,10 @@
   align-items: start;
   break-inside: avoid;
   page-break-inside: avoid;
+}
+
+.print-doc-summary-grid--single {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .print-doc-notes-box,

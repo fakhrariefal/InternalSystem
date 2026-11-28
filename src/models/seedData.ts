@@ -1,6 +1,8 @@
 import {
   getDefaultPurchaseOrderTerms,
+  getDefaultQuotationOpeningText,
   getDefaultQuotationTerms,
+  getDefaultRfqOpeningText,
   getDefaultSalesOrderTerms,
 } from './orderTerms';
 import type {
@@ -1982,6 +1984,7 @@ export function createInitialSeedState(): ErpState {
       incoterm: 'DDP - Franco Lokasi Pembeli',
       deliveryLocation: 'Proyek Gudang Logistik Nusantara, Jl. Cakung Cilincing KM 4, Jakarta Timur',
       termsAndConditions: getDefaultQuotationTerms(),
+      openingText: getDefaultQuotationOpeningText('PT Domestiq Hub Indonesia'),
       notes: 'Harga kontrak khusus proyek jalan tol tahap II.',
       createdBy: 'usr_sales_05',
       createdByName: 'Dewi Lestari',
@@ -2019,6 +2022,7 @@ export function createInitialSeedState(): ErpState {
       incoterm: 'DDP - Franco Lokasi Pembeli',
       deliveryLocation: 'Gate 3 Receiving Dock, Kawasan Industri MM2100 Blok G-4, Cikarang Barat',
       termsAndConditions: getDefaultQuotationTerms(),
+      openingText: getDefaultQuotationOpeningText('PT Domestiq Hub Indonesia'),
       notes: 'Penawaran kabel panel untuk lini perakitan Cikarang.',
       createdBy: 'usr_sales_05',
       createdByName: 'Dewi Lestari',
@@ -2079,6 +2083,7 @@ export function createInitialSeedState(): ErpState {
           submittedAt: monthsAgoIso(0, 20),
         },
       ],
+      openingText: getDefaultRfqOpeningText('PT Domestiq Hub Indonesia'),
       notes: 'Evaluasi harga & lead time sebelum award menjadi PO resmi.',
       createdBy: 'usr_purchasing_03',
       createdByName: 'Budi Santoso',

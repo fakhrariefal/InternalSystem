@@ -4,6 +4,7 @@ import {
   buildNextSequentialDocNumber,
   buildOrderTermsSummaryForPo,
   buildOrderTermsSummaryForQuotation,
+  buildOrderTermsSummaryForRfq,
   buildOrderTermsSummaryForSo,
   computeDueDateFromPaymentTerm,
   computeValidityPeriodLabel,
@@ -11,7 +12,10 @@ import {
   getDefaultPoDeliveryLocation,
   getDefaultPoIncoterm,
   getDefaultPurchaseOrderTerms,
+  getDefaultQuotationOpeningText,
   getDefaultQuotationTerms,
+  getDefaultRfqOpeningText,
+  getDefaultRfqTerms,
   getDefaultSalesDeliveryLocation,
   getDefaultSalesOrderTerms,
   INCOTERM_OPTIONS,
@@ -186,4 +190,37 @@ test('Sequential numbering avoids collisions after deletions and date helpers wo
     getDefaultSalesDeliveryLocation('EXW - Loco Gudang Penjual', { name: 'Cus' }, { address: 'Gudang A', name: 'A' }),
     'Gudang A'
   );
+});
+
+test('Opening texts & Vendor RFQ provisions summary are generated cleanly', () => {
+  const qtOpening = getDefaultQuotationOpeningText('PT Nusantara Jaya');
+  assert.ok(qtOpening.includes('Dengan hormat'));
+  assert.ok(qtOpening.includes('PT Nusantara Jaya'));
+
+  const rfqOpening = getDefaultRfqOpeningText('PT Nusantara Jaya');
+  assert.ok(rfqOpening.includes('Dengan hormat'));
+  assert.ok(rfqOpening.includes('PT Nusantara Jaya'));
+  assert.ok(rfqOpening.toLowerCase().includes('penawaran harga'));
+
+  assert.ok(getDefaultRfqTerms().includes('Validity Period'));
+
+  const rfqSummary = buildOrderTermsSummaryForRfq(
+    {
+      warehouseId: 'wh_1',
+      warehouseName: 'Gudang Sunter',
+      deadlineDate: '2026-12-10',
+      invitedSupplierIds: ['sup_1', 'sup_2'],
+      notes: 'Harap lampirkan katalog teknis.',
+    },
+    [
+      {
+        id: 'sup_1',
+        name: 'PT Vendor Satu',
+      },
+    ],
+    { name: 'Gudang Sunter', address: 'Jl. Danau Sunter No. 1' }
+  );
+  assert.equal(rfqSummary.heading, 'Ketentuan Pengajuan Penawaran (RFQ)');
+  assert.ok(rfqSummary.metaRows.some((r) => r.label === 'Vendor Terundang' && r.value === 'PT Vendor Satu'));
+  assert.equal(rfqSummary.additionalNotes, 'Harap lampirkan katalog teknis.');
 });

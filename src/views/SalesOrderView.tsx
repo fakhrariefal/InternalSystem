@@ -62,6 +62,7 @@ import {
 import {
   computeDueDateFromPaymentTerm,
   computeValidityPeriodLabel,
+  getDefaultQuotationOpeningText,
   getDefaultQuotationTerms,
   getDefaultSalesDeliveryLocation,
   getDefaultSalesIncoterm,
@@ -210,6 +211,9 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
   const [qtValidityPeriod, setQtValidityPeriod] = useState('14 Hari Kalender');
   const [qtLeadTime, setQtLeadTime] = useState('3-5 Hari Kerja setelah PO diterima');
   const [qtTerms, setQtTerms] = useState<string>(getDefaultQuotationTerms());
+  const [qtOpeningText, setQtOpeningText] = useState<string>(() =>
+    getDefaultQuotationOpeningText(state.settings.companyName)
+  );
   const [qtItems, setQtItems] = useState<DraftOrderRow[]>([
     {
       productId: state.products[0]?.id || '',
@@ -520,6 +524,7 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
     setQtIncoterm(inc);
     setQtDeliveryLocation(getDefaultSalesDeliveryLocation(inc, cus, wh));
     setQtTerms(getDefaultQuotationTerms());
+    setQtOpeningText(getDefaultQuotationOpeningText(state.settings.companyName));
 
     const baseItems: DraftOrderRow[] =
       (!qtItems[0]?.productId || qtItems.length === 0) && state.products[0]
@@ -2943,6 +2948,7 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                 validityPeriod: qtValidityPeriod,
                 leadTime: qtLeadTime,
                 termsAndConditions: qtTerms,
+                openingText: qtOpeningText,
                 items: qtItems,
                 sendImmediately: true,
               });
@@ -3038,6 +3044,30 @@ export function SalesOrderView({ erp }: { erp: ErpController }) {
                     />
                   </div>
                 </div>
+              </div>
+
+              <div className="border-t border-slate-100 pt-5 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor="qt-opening">Kalimat Pembuka Surat Penawaran</Label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setQtOpeningText(getDefaultQuotationOpeningText(state.settings.companyName))
+                    }
+                    className="text-[11px] font-semibold text-[#1B5E99] hover:underline cursor-pointer"
+                  >
+                    Reset Default
+                  </button>
+                </div>
+                <Textarea
+                  id="qt-opening"
+                  rows={3}
+                  maxLength={1000}
+                  placeholder="Dengan hormat, bersama surat ini kami menyampaikan penawaran harga resmi..."
+                  value={qtOpeningText}
+                  onChange={(e) => setQtOpeningText(e.target.value)}
+                  className="text-xs leading-relaxed"
+                />
               </div>
 
               <div className="border-t border-slate-100 pt-5 space-y-3">

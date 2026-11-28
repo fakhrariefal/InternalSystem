@@ -120,6 +120,12 @@ export function PrintableDocumentSheet({ data }: { data: PrintableDocumentData }
         </div>
       </section>
 
+      {data.openingText && (
+        <section className="print-doc-opening" data-testid="print-opening-text">
+          {data.openingText}
+        </section>
+      )}
+
       {/* Main Line Items / Attributes Table */}
       <section className="print-doc-table-wrap">
         <table className={`print-doc-table ${data.columns.length <= 2 ? 'print-doc-table--compact' : ''}`}>
@@ -164,7 +170,11 @@ export function PrintableDocumentSheet({ data }: { data: PrintableDocumentData }
 
       {/* Summary / Terms & Conditions / Bank Transfer / Notes Section */}
       {(data.termsSection || data.bankInfo || data.notesText || (data.totals && data.totals.length > 0)) && (
-        <section className="print-doc-summary-grid">
+        <section
+          className={`print-doc-summary-grid ${
+            data.totals && data.totals.length > 0 ? '' : 'print-doc-summary-grid--single'
+          }`}
+        >
           <div className="space-y-3">
             {data.termsSection && (
               <div className="print-doc-terms-box" data-testid="print-terms-section">

@@ -50,7 +50,9 @@ import {
   ensureMandatoryPoTermsNote,
   getDefaultPoDeliveryLocation,
   getDefaultPoIncoterm,
+  getDefaultQuotationOpeningText,
   getDefaultQuotationTerms,
+  getDefaultRfqOpeningText,
   getDefaultSalesDeliveryLocation,
   getDefaultSalesIncoterm,
   getDefaultSalesOrderTerms,
@@ -3612,6 +3614,7 @@ export function useErpController() {
       incoterm?: string;
       deliveryLocation?: string;
       termsAndConditions?: string;
+      openingText?: string;
       notes: string;
       items: Array<{
         productId: string;
@@ -3699,6 +3702,10 @@ export function useErpController() {
         input.termsAndConditions || getDefaultQuotationTerms(),
         2000
       );
+      const openingText = sanitizeString(
+        input.openingText || getDefaultQuotationOpeningText(state.settings.companyName),
+        1000
+      );
 
       const totals = calculateOrderTotals(orderItems, getEffectiveTaxRatePercent(state.settings));
       const qtId = input.isNew ? makeId('qt') : input.id || makeId('qt');
@@ -3735,6 +3742,7 @@ export function useErpController() {
         incoterm,
         deliveryLocation,
         termsAndConditions,
+        ...(openingText ? { openingText } : {}),
         notes: sanitizeString(input.notes, BLUEPRINT_CONSTRAINTS.NOTES_MAX_LENGTH),
         createdBy: existing?.createdBy || currentUser.uid,
         createdByName: existing?.createdByName || currentUser.displayName,
@@ -3916,6 +3924,7 @@ export function useErpController() {
       title: string;
       warehouseId: string;
       deadlineDate: string;
+      openingText?: string;
       notes: string;
       invitedSupplierIds: string[];
       items: Array<{ productId: string; qty: number; unitPrice: number }>;
@@ -3958,7 +3967,15 @@ export function useErpController() {
       const existing = state.vendorRfqs.find((r) => r.id === rfqId);
       const rfqNumber =
         existing?.rfqNumber ||
-        `RFQ-2026-${String(state.vendorRfqs.length + 1).padStart(4, '0')}`;
+        buildNextSequentialDocNumber(
+          'RFQ-2026-',
+          state.vendorRfqs.map((r) => r.rfqNumber),
+          19
+        );
+      const openingText = sanitizeString(
+        input.openingText || getDefaultRfqOpeningText(state.settings.companyName),
+        1000
+      );
       const rfq: VendorRfq = {
         id: rfqId,
         rfqNumber,
@@ -3970,6 +3987,7 @@ export function useErpController() {
         items: orderItems,
         invitedSupplierIds: input.invitedSupplierIds.slice(0, 20),
         quotes: existing?.quotes || [],
+        ...(openingText ? { openingText } : {}),
         notes: sanitizeString(input.notes, BLUEPRINT_CONSTRAINTS.NOTES_MAX_LENGTH),
         createdBy: existing?.createdBy || currentUser.uid,
         createdByName: existing?.createdByName || currentUser.displayName,
@@ -3989,7 +4007,15 @@ export function useErpController() {
       toast.success(`${rfqNumber} tersimpan (${rfq.status}).`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.products, state.vendorRfqs, state.warehouses]
+    [
+      authMode,
+      currentUser,
+      recordAudit,
+      state.products,
+      state.settings.companyName,
+      state.vendorRfqs,
+      state.warehouses,
+    ]
   );
 
   const submitVendorRfqQuote = useCallback(

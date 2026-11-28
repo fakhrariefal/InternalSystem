@@ -14,7 +14,10 @@ import {
 import {
   buildOrderTermsSummaryForPo,
   buildOrderTermsSummaryForQuotation,
+  buildOrderTermsSummaryForRfq,
   buildOrderTermsSummaryForSo,
+  getDefaultQuotationOpeningText,
+  getDefaultRfqOpeningText,
   resolvePaymentTermDisplay,
   type OrderTermsSectionSummary,
 } from '../models/orderTerms';
@@ -29,6 +32,7 @@ import type {
   SalesQuotation,
   StockMovement,
   Supplier,
+  VendorRfq,
   Warehouse,
 } from '../models/types';
 
@@ -248,13 +252,33 @@ function drawAlignedMetadataGrid(
   const rightEndY = renderColumn(margin + colWidth + colGap, rightRows);
   const blockEndY = Math.max(leftEndY, rightEndY) + 1.5;
 
-  // Subtle horizontal divider separating metadata from line-item table
+  // Subtle horizontal divider separating metadata from line-item table / opening text
   doc.setDrawColor(226, 232, 240);
   doc.setLineWidth(0.3);
   doc.line(margin, blockEndY, pageWidth - margin, blockEndY);
   doc.setFont('helvetica', 'normal');
 
   return blockEndY + 3.5;
+}
+
+/**
+ * Draws formal Indonesian B2B opening paragraph cleanly between metadata and item table.
+ */
+function drawOpeningTextPdf(
+  doc: jsPDF,
+  startY: number,
+  openingText?: string
+): number {
+  const clean = (openingText || '').trim();
+  if (!clean) return startY;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 14;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(30, 41, 59);
+  const lines = doc.splitTextToSize(clean, pageWidth - margin * 2) as string[];
+  doc.text(lines, margin, startY + 2.5);
+  return startY + Math.max(1, lines.length) * 3.7 + 4;
 }
 
 /**
@@ -296,11 +320,14 @@ function drawBottomTermsAndTotalsPdf(
   documentTitle: string,
   docBadge: string
 ): number {
+  const hasTotals = totalRows.length > 0;
   const leftX = 14;
-  const leftW = 98;
+  const leftW = hasTotals ? 98 : 182;
   const innerW = leftW - 7;
-  const labelW = 24;
-  const valW = leftW - labelW - 11;
+  const labelW = hasTotals ? 24 : 30;
+  const colonXOffset = hasTotals ? 27.5 : 33.5;
+  const valueXOffset = hasTotals ? 29.8 : 36;
+  const valW = leftW - labelW - (hasTotals ? 11 : 13);
 
   // Measure left box height before drawing
   let measureH = 6.5; // header
@@ -334,12 +361,12 @@ function drawBottomTermsAndTotalsPdf(
   }
   measureH += 2.5;
 
-  const rightH = Math.max(22, totalRows.length * 5.6 + 6);
+  const rightH = hasTotals ? Math.max(22, totalRows.length * 5.6 + 6) : 0;
   const blockH = Math.max(measureH, rightH);
 
   const y = ensureSpaceForBlock(doc, startY, blockH + 4, company, documentTitle, docBadge);
 
-  // Draw Left Box: Terms & Conditions
+  // Draw Left Box: Terms & Conditions (or Full-Width RFQ Provisions)
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(216, 226, 239);
   doc.setLineWidth(0.3);
@@ -349,7 +376,7 @@ function drawBottomTermsAndTotalsPdf(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.4);
   doc.setTextColor(11, 27, 58);
-  doc.text('TERMS & CONDITIONS', leftX + 3.5, curY);
+  doc.text((termsSummary.heading || 'TERMS & CONDITIONS').toUpperCase(), leftX + 3.5, curY);
   curY += 4.2;
 
   for (const m of measuredMeta) {
@@ -358,9 +385,9 @@ function drawBottomTermsAndTotalsPdf(
     doc.setTextColor(71, 85, 105);
     doc.text(m.label, leftX + 3.5, curY);
     doc.setFont('helvetica', 'bold');
-    doc.text(':', leftX + 27.5, curY);
+    doc.text(':', leftX + colonXOffset, curY);
     doc.setTextColor(15, 23, 42);
-    doc.text(m.valLines, leftX + 29.8, curY);
+    doc.text(m.valLines, leftX + valueXOffset, curY);
     curY += m.h;
   }
 
@@ -396,29 +423,31 @@ function drawBottomTermsAndTotalsPdf(
   }
 
   // Draw Right Box: Totals Summary (aligned horizontally at exact same Y)
-  const rightX = 116;
-  const rightW = 80;
-  doc.setFillColor(244, 247, 251);
-  doc.setDrawColor(216, 226, 239);
-  doc.roundedRect(rightX, y, rightW, rightH, 1.2, 1.2, 'FD');
+  if (hasTotals) {
+    const rightX = 116;
+    const rightW = 80;
+    doc.setFillColor(244, 247, 251);
+    doc.setDrawColor(216, 226, 239);
+    doc.roundedRect(rightX, y, rightW, rightH, 1.2, 1.2, 'FD');
 
-  let totY = y + 5.5;
-  totalRows.forEach((row, idx) => {
-    const isGrand = Boolean(row.isGrandTotal || idx === totalRows.length - 1);
-    if (isGrand && idx > 0) {
-      doc.setDrawColor(203, 213, 225);
-      doc.line(rightX + 3.5, totY - 2.4, rightX + rightW - 3.5, totY - 2.4);
-      totY += 1.2;
-    }
-    doc.setFont('helvetica', isGrand ? 'bold' : 'normal');
-    doc.setFontSize(isGrand ? 8.6 : 7.8);
-    doc.setTextColor(isGrand ? 11 : 71, isGrand ? 27 : 85, isGrand ? 58 : 105);
-    doc.text(row.label, rightX + 3.5, totY);
-    doc.text(':', rightX + 31.5, totY);
-    doc.setTextColor(15, 23, 42);
-    doc.text(row.value, rightX + rightW - 3.5, totY, { align: 'right' });
-    totY += 5.4;
-  });
+    let totY = y + 5.5;
+    totalRows.forEach((row, idx) => {
+      const isGrand = Boolean(row.isGrandTotal || idx === totalRows.length - 1);
+      if (isGrand && idx > 0) {
+        doc.setDrawColor(203, 213, 225);
+        doc.line(rightX + 3.5, totY - 2.4, rightX + rightW - 3.5, totY - 2.4);
+        totY += 1.2;
+      }
+      doc.setFont('helvetica', isGrand ? 'bold' : 'normal');
+      doc.setFontSize(isGrand ? 8.6 : 7.8);
+      doc.setTextColor(isGrand ? 11 : 71, isGrand ? 27 : 85, isGrand ? 58 : 105);
+      doc.text(row.label, rightX + 3.5, totY);
+      doc.text(':', rightX + 31.5, totY);
+      doc.setTextColor(15, 23, 42);
+      doc.text(row.value, rightX + rightW - 3.5, totY, { align: 'right' });
+      totY += 5.4;
+    });
+  }
 
   return y + blockH;
 }
@@ -1380,7 +1409,7 @@ export async function exportSalesQuotationPdf(
   const title = 'PENAWARAN HARGA / SALES QUOTATION';
   const metaStartY = drawCorporateBanner(doc, company, title, qt.quotationNumber);
 
-  const tableStartY = drawAlignedMetadataGrid(
+  const afterMetaY = drawAlignedMetadataGrid(
     doc,
     metaStartY,
     [
@@ -1402,6 +1431,12 @@ export async function exportSalesQuotationPdf(
         ),
       },
     ]
+  );
+
+  const tableStartY = drawOpeningTextPdf(
+    doc,
+    afterMetaY,
+    (qt.openingText || '').trim() || getDefaultQuotationOpeningText(company.companyName)
   );
 
   autoTable(doc, {
@@ -1483,6 +1518,119 @@ export async function exportSalesQuotationPdf(
   );
 
   doc.save(`${qt.quotationNumber}.pdf`);
+}
+
+export async function exportVendorRfqPdf(
+  rfq: VendorRfq,
+  company: CompanySettings,
+  suppliers: Supplier[] = [],
+  warehouse?: Warehouse,
+  targetSupplier?: Supplier
+): Promise<void> {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const title = 'PERMINTAAN PENAWARAN HARGA / REQUEST FOR QUOTATION (RFQ)';
+  const metaStartY = drawCorporateBanner(doc, company, title, rfq.rfqNumber);
+
+  const invitedSuppliers = suppliers.filter((s) => rfq.invitedSupplierIds.includes(s.id));
+  const recipientDisplay = targetSupplier
+    ? targetSupplier.name
+    : invitedSuppliers.length > 0
+    ? invitedSuppliers.map((s) => s.name).join(', ')
+    : 'Vendor / Supplier Terundang';
+
+  const afterMetaY = drawAlignedMetadataGrid(
+    doc,
+    metaStartY,
+    [
+      { label: 'Nomor RFQ', value: rfq.rfqNumber },
+      { label: 'Judul Pengadaan', value: rfq.title },
+      { label: 'Kepada Yth', value: recipientDisplay },
+      { label: 'Status RFQ', value: rfq.status },
+    ],
+    [
+      { label: 'Tanggal Terbit', value: (rfq.createdAt || '').slice(0, 10) || '-' },
+      { label: 'Batas Penawaran', value: rfq.deadlineDate || '-' },
+      { label: 'Gudang Tujuan', value: warehouse?.name || rfq.warehouseName || rfq.warehouseId },
+      { label: 'Mata Uang Acuan', value: 'IDR / USD (Sesuai Penawaran)' },
+    ]
+  );
+
+  const tableStartY = drawOpeningTextPdf(
+    doc,
+    afterMetaY,
+    (rfq.openingText || '').trim() || getDefaultRfqOpeningText(company.companyName)
+  );
+
+  autoTable(doc, {
+    startY: tableStartY,
+    margin: { left: 14, right: 14, bottom: 40 },
+    head: [['No', 'SKU', 'Nama Barang / Spesifikasi', 'Satuan', 'Qty Diminta', 'Keterangan']],
+    body: rfq.items.map((item, idx) => [
+      String(idx + 1),
+      item.sku,
+      item.productName,
+      item.uomCode,
+      String(item.qty),
+      'Mohon ajukan harga & lead time terbaik',
+    ]),
+    styles: { fontSize: 8, cellPadding: 2.3, textColor: [15, 23, 42] },
+    headStyles: { fillColor: [11, 27, 58], textColor: [255, 255, 255], fontSize: 8 },
+    alternateRowStyles: { fillColor: [244, 247, 251] },
+    columnStyles: {
+      0: { cellWidth: 10, halign: 'center' },
+      1: { cellWidth: 25 },
+      3: { cellWidth: 18, halign: 'center' },
+      4: { cellWidth: 20, halign: 'right', fontStyle: 'bold' },
+      5: { cellWidth: 44 },
+    },
+  });
+
+  const blockStartY = getLastAutoTableFinalY(doc, tableStartY) + 5;
+  const termsSummary = buildOrderTermsSummaryForRfq(rfq, suppliers, warehouse);
+  const blockEndY = drawBottomTermsAndTotalsPdf(
+    doc,
+    blockStartY,
+    termsSummary,
+    [],
+    company,
+    title,
+    rfq.rfqNumber
+  );
+
+  const sigY = ensureSpaceForBlock(doc, blockEndY + 7, 28, company, title, rfq.rfqNumber);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.8);
+  doc.setTextColor(71, 85, 105);
+  doc.text('Diterbitkan Oleh (Procurement),', 16, sigY);
+  doc.text('Mengetahui (Manager / Direktur),', 132, sigY);
+
+  doc.setDrawColor(148, 163, 184);
+  doc.line(16, sigY + 16, 68, sigY + 16);
+  doc.line(132, sigY + 16, 194, sigY + 16);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(15, 23, 42);
+  doc.text(rfq.createdByName || 'Procurement Team', 16, sigY + 20.5);
+  doc.text(company.companyName || 'PT Domestiq Hub Indonesia', 132, sigY + 20.5);
+
+  const qrUrl = await generateQrDataUrl(
+    `DHI-RFQ|${rfq.rfqNumber}|${rfq.title}|DEADLINE:${rfq.deadlineDate}|ITEMS:${rfq.items.length}|${rfq.status}`
+  );
+  finalizePdfWithFootersAndBottomQr(
+    doc,
+    company,
+    sigY + 24,
+    {
+      qrDataUrl: qrUrl,
+      code: rfq.rfqNumber,
+      title: 'VERIFIKASI DIGITAL REQUEST FOR QUOTATION (RFQ)',
+      detailLine: `Judul: ${rfq.title} | Batas Penawaran: ${rfq.deadlineDate} | Item: ${rfq.items.length}`,
+    },
+    title,
+    rfq.rfqNumber
+  );
+
+  doc.save(`${rfq.rfqNumber}.pdf`);
 }
 
 export async function exportSalesInvoicePdf(

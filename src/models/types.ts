@@ -342,6 +342,7 @@ export interface SalesQuotation {
   incoterm?: string;
   deliveryLocation?: string;
   termsAndConditions?: string;
+  openingText?: string;
   notes?: string;
   convertedSoId?: string;
   convertedSoNumber?: string;
@@ -377,6 +378,7 @@ export interface VendorRfq {
   awardedSupplierId?: string;
   awardedPoId?: string;
   awardedPoNumber?: string;
+  openingText?: string;
   notes?: string;
   createdBy: string;
   createdByName?: string;
