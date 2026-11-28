@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS public.companies (
   tax_rate_percent NUMERIC(5,2) NOT NULL DEFAULT 11,
   is_pkp BOOLEAN NOT NULL DEFAULT FALSE,
   supplier_categories JSONB NOT NULL DEFAULT '["IT","Safety/MRO","Packaging","ATK"]'::jsonb,
-  initial_seed_completed BOOLEAN NOT NULL DEFAULT TRUE,
+  initial_seed_completed BOOLEAN NOT NULL DEFAULT FALSE,
   updated_by UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -658,7 +658,7 @@ BEGIN
     v_company_name,
     'General Supplier ERP',
     v_email,
-    TRUE
+    FALSE
   )
   RETURNING id INTO v_company_id;
 

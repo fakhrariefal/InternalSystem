@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, CheckCheck, Copy, Download, Mail, MessageSquare, Trash2 } from 'lucide-react';
+import { AlertTriangle, Check, CheckCheck, Copy, Database, Download, Mail, MessageSquare, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { BulkActionBar, SelectCheckbox } from '../components/ui/BulkActions';
@@ -844,6 +844,40 @@ export function SystemView({ erp }: { erp: ErpController }) {
               </form>
             </CardContent>
           </Card>
+
+          {isDirektur && (
+            <Card className="mt-5 border-sky-200 bg-sky-50/40">
+              <CardHeader>
+                <CardTitle className="text-[#0B1B3A] flex items-center gap-2 text-base">
+                  <Database className="h-4 w-4 text-[#1B5E99] shrink-0" />
+                  Inisialisasi &amp; Data Awal Database ERP
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 text-xs text-slate-700">
+                <p>
+                  Jika tabel Supabase Anda masih kosong, klik tombol di bawah untuk mengisi otomatis 16 Daftar Akun (CoA Standar Indonesia), gudang, satuan, kategori, master vendor/customer/produk, serta contoh transaksi awal ke workspace perusahaan Anda.
+                </p>
+                <Button
+                  type="button"
+                  variant="accent"
+                  disabled={
+                    erp.seedingDatabase ||
+                    state.chartOfAccounts.length > 0 ||
+                    state.warehouses.length > 0 ||
+                    state.products.length > 0
+                  }
+                  onClick={() => void erp.seedInitialData()}
+                >
+                  <Database className="h-4 w-4" />
+                  {erp.seedingDatabase
+                    ? 'Mengisi Data ke Supabase...'
+                    : state.chartOfAccounts.length > 0 || state.products.length > 0
+                      ? 'Database Sudah Terisi Data'
+                      : 'Muat Data Awal & CoA Standar ERP'}
+                </Button>
+              </CardContent>
+            </Card>
+          )}
 
           {isDirektur && (
             <Card className="mt-5 border-red-200 bg-red-50/40">

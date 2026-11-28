@@ -2,7 +2,8 @@ import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { sanitizeAuthProfileFields } from '../models/erpLogic';
 import { normalizeUserRole } from '../models/rbac';
-import { createEmptyErpState } from '../models/seedData';
+import { createEmptyErpState, createInitialSeedState } from '../models/seedData';
+import { remapSeedStateForCompany } from '../models/seedRemapper';
 import type {
   AccountingInvoice,
   AccountingPeriodLock,
@@ -1521,3 +1522,122 @@ export async function resetTotalDatabaseInSupabase(
     companyId
   );
 }
+
+export async function seedInitialDataToSupabase(
+  companyId: string,
+  actorUid: string,
+  currentSettings: CompanySettings
+): Promise<boolean> {
+  // Cek apakah database sudah memiliki CoA / Gudang / Produk agar idempotent
+  const [coaCheck, whCheck, prodCheck] = await Promise.all([
+    supabase.from('chart_of_accounts').select('id', { count: 'exact', head: true }).eq('company_id', companyId),
+    supabase.from('warehouses').select('id', { count: 'exact', head: true }).eq('company_id', companyId),
+    supabase.from('products').select('id', { count: 'exact', head: true }).eq('company_id', companyId),
+  ]);
+  throwIfError(coaCheck.error, 'seed.check.coa');
+  throwIfError(whCheck.error, 'seed.check.warehouses');
+  throwIfError(prodCheck.error, 'seed.check.products');
+
+  if ((coaCheck.count || 0) > 0 || (whCheck.count || 0) > 0 || (prodCheck.count || 0) > 0) {
+    await markSeedCompletedInSupabase(companyId, actorUid);
+    return false;
+  }
+
+  const seed = remapSeedStateForCompany(createInitialSeedState(), companyId, actorUid);
+
+  const upsertBatch = async (
+    table: ErpTableName,
+    items: Array<Record<string, unknown>>
+  ): Promise<void> => {
+    if (items.length === 0) return;
+    const rows = items.map((item) => serializePayload(table, item, companyId));
+    const { error } = await supabase.from(table).upsert(rows, { onConflict: 'id' });
+    throwIfError(error, `${table}.seed`);
+  };
+
+  // 1. Master Data & Chart of Accounts (parent rows first for FKs)
+  await upsertBatch('warehouses', seed.warehouses as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('categories', seed.categories as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('uoms', seed.uoms as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('suppliers', seed.suppliers as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('customers', seed.customers as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('products', seed.products as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('chart_of_accounts', seed.chartOfAccounts as unknown as Array<Record<string, unknown>>);
+
+  // 2. Quotations, Purchase Orders + Logs, Sales Orders, RFQs, Goods Returns
+  await upsertBatch('sales_quotations', seed.salesQuotations as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('purchase_orders', seed.purchaseOrders as unknown as Array<Record<string, unknown>>);
+
+  const poLogRows: Array<Record<string, unknown>> = [];
+  for (const po of seed.purchaseOrders) {
+    for (const log of po.logs || []) {
+      poLogRows.push({
+        id: log.id,
+        purchase_order_id: po.id,
+        action: log.action,
+        actorId: log.actorId,
+        actorName: log.actorName,
+        note: log.note ?? null,
+        timestamp: log.timestamp,
+      });
+    }
+  }
+  await upsertBatch('purchase_order_logs', poLogRows);
+
+  await upsertBatch('sales_orders', seed.salesOrders as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('vendor_rfqs', seed.vendorRfqs as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('goods_returns', seed.goodsReturns as unknown as Array<Record<string, unknown>>);
+
+  // 3. Inventory Batches & Stock Movements
+  await upsertBatch('inventory_batches', seed.inventoryBatches as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('stock_movements', seed.stockMovements as unknown as Array<Record<string, unknown>>);
+
+  // 4. Invoices + Payments, Journal Entries, Period Locks, Budgets
+  await upsertBatch('invoices', seed.invoices as unknown as Array<Record<string, unknown>>);
+
+  const paymentRows: Array<Record<string, unknown>> = [];
+  for (const inv of seed.invoices) {
+    for (const pay of inv.payments || []) {
+      paymentRows.push({
+        id: pay.id,
+        invoice_id: inv.id,
+        amount: pay.amount,
+        currency: pay.currency,
+        exchangeRate: pay.exchangeRate ?? 16250,
+        paymentMethod: pay.paymentMethod,
+        referenceNo: pay.referenceNo ?? '',
+        notes: pay.notes ?? '',
+        recordedBy: pay.recordedBy,
+        recordedByName: pay.recordedByName ?? '',
+        paidAt: pay.paidAt,
+      });
+    }
+  }
+  await upsertBatch('invoice_payments', paymentRows);
+
+  await upsertBatch('journal_entries', seed.journalEntries as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('accounting_period_locks', seed.periodClosings as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('monthly_budgets', seed.budgets as unknown as Array<Record<string, unknown>>);
+
+  // 5. Audit Logs & Notifications
+  await upsertBatch('audit_logs', seed.auditLogs as unknown as Array<Record<string, unknown>>);
+  await upsertBatch('notifications', seed.notifications as unknown as Array<Record<string, unknown>>);
+
+  // 6. Update company metadata & mark initial seed complete
+  await saveSupabaseRecord(
+    'settings',
+    companyId,
+    {
+      ...seed.settings,
+      companyName: currentSettings.companyName || seed.settings.companyName,
+      email: currentSettings.email || seed.settings.email,
+      initialSeedCompleted: true,
+      updatedBy: actorUid,
+    },
+    false,
+    companyId
+  );
+
+  return true;
+}
+

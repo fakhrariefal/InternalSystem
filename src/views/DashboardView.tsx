@@ -7,6 +7,7 @@ import {
   ClipboardList,
   Copy,
   CreditCard,
+  Database,
   Landmark,
   Mail,
   MessageSquare,
@@ -604,6 +605,44 @@ export function DashboardView({ erp }: { erp: ErpController }) {
           </div>
         )}
       </div>
+
+      {erp.authMode === 'supabase' &&
+        currentUser?.role === 'Direktur' &&
+        state.chartOfAccounts.length === 0 &&
+        state.warehouses.length === 0 &&
+        state.products.length === 0 && (
+          <Card className="border-sky-200 bg-sky-50/70">
+            <CardContent className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-1">
+                <div className="text-sm font-semibold text-[#0B1B3A] flex items-center gap-2">
+                  <Database className="h-4 w-4 text-[#1B5E99]" />
+                  {tr(
+                    'Database Supabase Perusahaan Masih Kosong',
+                    'Company Supabase Database Is Empty'
+                  )}
+                </div>
+                <p className="text-xs text-slate-600">
+                  {tr(
+                    'Isi otomatis 16 Daftar Akun (CoA Standar), gudang, satuan, kategori, master partner/produk, serta data awal ERP langsung ke PostgreSQL Supabase Anda.',
+                    'Automatically populate 16 standard Chart of Accounts, warehouses, UoMs, categories, master partners/products, and sample ERP data into your Supabase PostgreSQL.'
+                  )}
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="accent"
+                disabled={erp.seedingDatabase}
+                onClick={() => void erp.seedInitialData()}
+                className="shrink-0"
+              >
+                <Database className="h-4 w-4" />
+                {erp.seedingDatabase
+                  ? tr('Mengisi Data...', 'Seeding Database...')
+                  : tr('Muat Data Awal & CoA ERP', 'Load Initial ERP Data & CoA')}
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
       {/* Boardroom Executive Briefing Strip (Expanded in Meeting Mode, Compact Always) */}
       <Card className={cn(meetingMode ? 'bg-[#0B1B3A] text-white border-[#1B5E99]' : 'bg-white')}>

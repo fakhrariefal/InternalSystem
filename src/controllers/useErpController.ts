@@ -53,6 +53,7 @@ import {
 } from '../models/orderTerms';
 import { canAccessModule, hasPermission } from '../models/rbac';
 import { createEmptyErpState, createInitialSeedState } from '../models/seedData';
+import { remapSeedStateForCompany } from '../models/seedRemapper';
 import {
   BLUEPRINT_CONSTRAINTS,
   type AccountCategory,
@@ -109,6 +110,7 @@ import {
   markSeedCompletedInSupabase,
   resetTotalDatabaseInSupabase,
   saveSupabaseRecord,
+  seedInitialDataToSupabase,
   subscribeErpCollections,
   uploadFileToStorage,
   uploadPartnerDocument,
@@ -132,8 +134,11 @@ export function useErpController() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
+  const [seedingDatabase, setSeedingDatabase] = useState(false);
+  const [snapshotReadyCompanyId, setSnapshotReadyCompanyId] = useState<string | null>(null);
   const authModeRef = useRef<AuthMode>('loading');
   const hydratingSessionRef = useRef<{ uid: string; promise: Promise<boolean> } | null>(null);
+  const autoSeededCompaniesRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     authModeRef.current = authMode;
@@ -267,8 +272,12 @@ export function useErpController() {
   }, [hydrateSupabaseSession]);
 
   useEffect(() => {
-    if (authMode !== 'supabase' || !supabaseUser || !currentUser?.companyId) return;
+    if (authMode !== 'supabase' || !supabaseUser || !currentUser?.companyId) {
+      setSnapshotReadyCompanyId(null);
+      return;
+    }
     const companyId = currentUser.companyId;
+    setSnapshotReadyCompanyId(null);
     setState((prev) => ({
       ...createEmptyErpState(),
       settings: { ...prev.settings, id: companyId },
@@ -282,6 +291,7 @@ export function useErpController() {
           ...prev,
           ...partial,
         }));
+        setSnapshotReadyCompanyId(companyId);
       },
       (err) => {
         setAuthError(formatSupabaseAuthErrorMessage(err));
@@ -291,6 +301,86 @@ export function useErpController() {
     );
     return () => unsub();
   }, [authMode, currentUser, supabaseUser]);
+
+  const seedInitialData = useCallback(async (): Promise<boolean> => {
+    if (!currentUser || !hasPermission(currentUser.role, 'master:users')) {
+      toast.error('Hanya Direktur yang dapat memuat data awal ERP.');
+      return false;
+    }
+    if (authMode !== 'supabase' || !activeCompanyId) {
+      const seed = createInitialSeedState();
+      setState(seed);
+      toast.success('Data awal ERP berhasil dimuat ke mode preview.');
+      return true;
+    }
+    setSeedingDatabase(true);
+    try {
+      const seeded = await seedInitialDataToSupabase(
+        activeCompanyId,
+        currentUser.uid,
+        state.settings
+      );
+      const remapped = remapSeedStateForCompany(
+        createInitialSeedState(),
+        activeCompanyId,
+        currentUser.uid
+      );
+      if (seeded) {
+        setState((prev) => ({
+          ...remapped,
+          users: prev.users,
+          settings: {
+            ...remapped.settings,
+            companyName: prev.settings.companyName || remapped.settings.companyName,
+            email: prev.settings.email || remapped.settings.email,
+            initialSeedCompleted: true,
+          },
+        }));
+        toast.success('Data awal ERP, CoA standar, & master data berhasil disimpan ke Supabase!');
+      } else {
+        toast.info('Database perusahaan Anda sudah memiliki data awal.');
+      }
+      return seeded;
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Gagal mengisi data awal ke Supabase.');
+      return false;
+    } finally {
+      setSeedingDatabase(false);
+    }
+  }, [activeCompanyId, authMode, currentUser, state.settings]);
+
+  useEffect(() => {
+    if (
+      authMode !== 'supabase' ||
+      !currentUser ||
+      currentUser.role !== 'Direktur' ||
+      !activeCompanyId ||
+      snapshotReadyCompanyId !== activeCompanyId
+    ) {
+      return;
+    }
+    if (state.settings.initialSeedCompleted) return;
+    if (
+      state.chartOfAccounts.length > 0 ||
+      state.warehouses.length > 0 ||
+      state.products.length > 0
+    ) {
+      return;
+    }
+    if (autoSeededCompaniesRef.current.has(activeCompanyId)) return;
+    autoSeededCompaniesRef.current.add(activeCompanyId);
+    void seedInitialData();
+  }, [
+    activeCompanyId,
+    authMode,
+    currentUser,
+    seedInitialData,
+    snapshotReadyCompanyId,
+    state.chartOfAccounts.length,
+    state.products.length,
+    state.settings.initialSeedCompleted,
+    state.warehouses.length,
+  ]);
 
   const loginWithEmail = useCallback(
     async (email: string, password: string): Promise<boolean> => {
@@ -1347,7 +1437,11 @@ export function useErpController() {
       toast.error('Hanya Direktur yang dapat membersihkan data dummy master.');
       return;
     }
-    const targets = findSeededDummyMasterTargets(state, createInitialSeedState());
+    const expectedSeed =
+      authMode === 'supabase' && activeCompanyId
+        ? remapSeedStateForCompany(createInitialSeedState(), activeCompanyId, currentUser.uid)
+        : createInitialSeedState();
+    const targets = findSeededDummyMasterTargets(state, expectedSeed);
     if (targets.totalCount === 0) {
       toast.info('Tidak ada data dummy master yang tersisa.');
       return;
@@ -1868,7 +1962,11 @@ export function useErpController() {
       toast.error('Hanya Direktur yang dapat menghapus PO dummy.');
       return;
     }
-    const targets = findSeededDummyOrderTargets(state, createInitialSeedState());
+    const expectedSeed =
+      authMode === 'supabase' && activeCompanyId
+        ? remapSeedStateForCompany(createInitialSeedState(), activeCompanyId, currentUser.uid)
+        : createInitialSeedState();
+    const targets = findSeededDummyOrderTargets(state, expectedSeed);
     if (targets.poIds.length === 0) {
       toast.info('Tidak ada PO dummy yang tersisa.');
       return;
@@ -2878,7 +2976,11 @@ export function useErpController() {
       toast.error('Hanya Direktur yang dapat menghapus SO dummy.');
       return;
     }
-    const targets = findSeededDummyOrderTargets(state, createInitialSeedState());
+    const expectedSeed =
+      authMode === 'supabase' && activeCompanyId
+        ? remapSeedStateForCompany(createInitialSeedState(), activeCompanyId, currentUser.uid)
+        : createInitialSeedState();
+    const targets = findSeededDummyOrderTargets(state, expectedSeed);
     if (targets.soIds.length === 0) {
       toast.info('Tidak ada SO dummy yang tersisa.');
       return;
@@ -3323,7 +3425,11 @@ export function useErpController() {
       toast.error('Hanya Direktur yang dapat membersihkan jurnal dummy.');
       return;
     }
-    const targetIds = findSeededDummyAccountingTargets(state, createInitialSeedState());
+    const expectedSeed =
+      authMode === 'supabase' && activeCompanyId
+        ? remapSeedStateForCompany(createInitialSeedState(), activeCompanyId, currentUser.uid)
+        : createInitialSeedState();
+    const targetIds = findSeededDummyAccountingTargets(state, expectedSeed);
     if (targetIds.length === 0) {
       toast.info('Tidak ada jurnal dummy bawaan yang tersisa.');
       return;
@@ -5678,6 +5784,8 @@ export function useErpController() {
     bulkMarkNotificationsRead,
     bulkDeleteNotifications,
     bulkDeleteAuditLogs,
+    seedingDatabase,
+    seedInitialData,
     resetTotalDatabase,
   };
 }

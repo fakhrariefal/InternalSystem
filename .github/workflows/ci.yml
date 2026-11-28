@@ -1,4 +1,4 @@
-name: Build & Verify ERP
+name: Build & Deploy ERP
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build_and_verify:
+  build_and_deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -34,9 +34,9 @@ jobs:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
 
-      - name: Upload Build Artifact
-        uses: actions/upload-artifact@v4
+      - name: Deploy Static Bundle to Firebase Hosting
+        uses: w9jds/firebase-action@v15.4.0
         with:
-          name: dist-bundle
-          path: dist/
-          retention-days: 7
+          args: deploy --project gen-lang-client-0621052252 --only hosting
+        env:
+          GCP_SA_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
