@@ -1,21 +1,25 @@
-import { ExternalLink, Languages, Lock } from 'lucide-react';
+import { Languages, Lock, LogIn, UserPlus } from 'lucide-react';
+import React, { useState } from 'react';
 import { useI18n } from '../lib/i18n';
 import { cn } from '../lib/utils';
 
 interface LoginViewProps {
-  onGoogleLogin: () => Promise<void>;
-  onGoogleRedirectLogin?: () => Promise<void>;
+  onEmailLogin: (email: string, password: string) => Promise<boolean>;
+  onEmailRegister: (input: {
+    displayName: string;
+    companyName: string;
+    email: string;
+    password: string;
+  }) => Promise<boolean>;
+  onGoogleLogin?: () => Promise<void>;
   busy: boolean;
   error: string | null;
+  infoMessage?: string | null;
 }
 
 function GoogleMark() {
   return (
-    <svg
-      className="h-4 w-4 shrink-0"
-      viewBox="0 0 24 24"
-      aria-hidden="true"
-    >
+    <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
       <path
         fill="#4285F4"
         d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
@@ -37,19 +41,37 @@ function GoogleMark() {
 }
 
 export function LoginView({
+  onEmailLogin,
+  onEmailRegister,
   onGoogleLogin,
-  onGoogleRedirectLogin,
   busy,
   error,
+  infoMessage,
 }: LoginViewProps) {
   const { lang, setLang, tr } = useI18n();
-  const inIframe = (() => {
-    try {
-      return typeof window !== 'undefined' && window.self !== window.top;
-    } catch {
-      return true;
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [companyName, setCompanyName] = useState('PT Domestiq Hub Indonesia');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    if (mode === 'login') {
+      await onEmailLogin(email, password);
+    } else {
+      const ok = await onEmailRegister({
+        displayName,
+        companyName,
+        email,
+        password,
+      });
+      if (ok) {
+        setPassword('');
+      }
     }
-  })();
+  };
 
   return (
     <div className="min-h-dvh flex flex-col bg-[#F4F7FB] text-[#0B1B3A] relative overflow-x-hidden">
@@ -93,14 +115,14 @@ export function LoginView({
         </div>
       </header>
 
-      {/* Centered Single-Focus Login Card */}
-      <main className="flex-1 flex items-center justify-center px-4 py-8 sm:py-12">
-        <div className="w-full max-w-[420px]">
+      {/* Centered Single-Focus Login / Register Card */}
+      <main className="flex-1 flex items-center justify-center px-4 py-8 sm:py-10">
+        <div className="w-full max-w-[440px]">
           <div className="rounded-2xl border border-slate-200/90 bg-white shadow-[0_12px_36px_-12px_rgba(11,27,58,0.12)] overflow-hidden">
             {/* Subtle Gold-to-Navy Accent Bar */}
             <div className="h-[3px] w-full bg-gradient-to-r from-[#0B1B3A] via-[#1B5E99] to-[#D9AA32]" />
 
-            <div className="p-6 sm:p-8 space-y-6">
+            <div className="p-6 sm:p-8 space-y-5">
               {/* Brand Logo */}
               <div className="flex justify-center pt-1">
                 <img
@@ -112,19 +134,62 @@ export function LoginView({
               </div>
 
               {/* Heading */}
-              <div className="text-center space-y-1.5">
+              <div className="text-center space-y-1">
                 <h1 className="text-xl sm:text-[22px] font-bold tracking-tight text-[#0B1B3A]">
                   {tr('Portal Internal ERP', 'Internal ERP Portal')}
                 </h1>
                 <p className="text-xs sm:text-[13px] text-slate-500 leading-relaxed">
-                  {tr(
-                    'Masuk dengan akun Google korporat terdaftar untuk mengakses sistem operasional & keuangan.',
-                    'Sign in with your registered corporate Google account to access operations & accounting.'
-                  )}
+                  {mode === 'login'
+                    ? tr(
+                        'Masuk dengan akun terdaftar untuk mengakses sistem operasional & keuangan.',
+                        'Sign in with your registered account to access operations & accounting.'
+                      )
+                    : tr(
+                        'Buat akun & workspace perusahaan baru atau klaim undangan tim dari Direktur.',
+                        'Create a new account & company workspace or claim a team invitation.'
+                      )}
                 </p>
               </div>
 
-              {/* Error Feedback */}
+              {/* Login / Register Mode Switcher */}
+              <div
+                role="tablist"
+                aria-label={tr('Mode otentikasi', 'Authentication mode')}
+                className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === 'login'}
+                  onClick={() => setMode('login')}
+                  className={cn(
+                    'min-h-[38px] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer',
+                    mode === 'login'
+                      ? 'bg-white text-[#0B1B3A] shadow-xs'
+                      : 'text-slate-600 hover:text-[#0B1B3A]'
+                  )}
+                >
+                  <LogIn className="h-3.5 w-3.5" />
+                  {tr('Masuk (Login)', 'Sign In')}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === 'register'}
+                  onClick={() => setMode('register')}
+                  className={cn(
+                    'min-h-[38px] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer',
+                    mode === 'register'
+                      ? 'bg-white text-[#0B1B3A] shadow-xs'
+                      : 'text-slate-600 hover:text-[#0B1B3A]'
+                  )}
+                >
+                  <UserPlus className="h-3.5 w-3.5" />
+                  {tr('Daftar Akun', 'Register')}
+                </button>
+              </div>
+
+              {/* Error / Info Feedback */}
               {error && (
                 <div
                   role="alert"
@@ -134,68 +199,154 @@ export function LoginView({
                 </div>
               )}
 
-              {/* Primary Google Sign-In CTA */}
-              <div className="space-y-3 pt-1">
+              {infoMessage && (
+                <div
+                  role="status"
+                  className="rounded-lg border border-emerald-200 bg-emerald-50/90 px-3.5 py-2.5 text-xs text-emerald-800 leading-relaxed"
+                >
+                  {infoMessage}
+                </div>
+              )}
+
+              {/* Email / Password Form */}
+              <form onSubmit={handleSubmit} className="space-y-3.5">
+                {mode === 'register' && (
+                  <>
+                    <div className="space-y-1">
+                      <label htmlFor="auth-display-name" className="block text-xs font-semibold text-[#0B1B3A]">
+                        {tr('Nama Lengkap', 'Full Name')}
+                      </label>
+                      <input
+                        id="auth-display-name"
+                        type="text"
+                        required
+                        minLength={2}
+                        maxLength={120}
+                        placeholder={tr('Contoh: Fakhri Ariefal', 'e.g. Fakhri Ariefal')}
+                        value={displayName}
+                        onChange={(e) => setDisplayName(e.target.value)}
+                        className="w-full min-h-[42px] rounded-lg border border-slate-200 bg-white px-3 text-sm text-[#0B1B3A] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1B5E99]"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor="auth-company-name" className="block text-xs font-semibold text-[#0B1B3A]">
+                        {tr('Nama Perusahaan', 'Company Name')}
+                      </label>
+                      <input
+                        id="auth-company-name"
+                        type="text"
+                        required
+                        minLength={2}
+                        maxLength={160}
+                        placeholder="PT Domestiq Hub Indonesia"
+                        value={companyName}
+                        onChange={(e) => setCompanyName(e.target.value)}
+                        className="w-full min-h-[42px] rounded-lg border border-slate-200 bg-white px-3 text-sm text-[#0B1B3A] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1B5E99]"
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div className="space-y-1">
+                  <label htmlFor="auth-email" className="block text-xs font-semibold text-[#0B1B3A]">
+                    {tr('Email Perusahaan', 'Corporate Email')}
+                  </label>
+                  <input
+                    id="auth-email"
+                    type="email"
+                    required
+                    autoComplete="email"
+                    placeholder="nama@perusahaan.co.id"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full min-h-[42px] rounded-lg border border-slate-200 bg-white px-3 text-sm text-[#0B1B3A] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1B5E99]"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label htmlFor="auth-password" className="block text-xs font-semibold text-[#0B1B3A]">
+                    {tr('Kata Sandi', 'Password')}
+                  </label>
+                  <input
+                    id="auth-password"
+                    type="password"
+                    required
+                    minLength={6}
+                    autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                    placeholder={tr('Minimal 6 karakter', 'Minimum 6 characters')}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full min-h-[42px] rounded-lg border border-slate-200 bg-white px-3 text-sm text-[#0B1B3A] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1B5E99]"
+                  />
+                </div>
+
                 <button
-                  type="button"
-                  onClick={onGoogleLogin}
+                  type="submit"
                   disabled={busy}
                   className={cn(
                     'w-full min-h-[46px] px-4 py-2.5 rounded-xl font-semibold text-sm',
                     'bg-[#0B1B3A] text-white hover:bg-[#13284F] active:bg-[#08142B]',
-                    'transition-colors flex items-center justify-center gap-3 cursor-pointer',
+                    'transition-colors flex items-center justify-center gap-2 cursor-pointer',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1B5E99] focus-visible:ring-offset-2',
                     'disabled:opacity-60 disabled:cursor-not-allowed'
                   )}
                 >
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-white">
-                    <GoogleMark />
-                  </span>
-                  <span>
-                    {busy
-                      ? tr('Menghubungkan ke Google...', 'Connecting to Google...')
-                      : tr('Masuk dengan Google', 'Sign In with Google')}
-                  </span>
+                  {mode === 'login' ? (
+                    <>
+                      <LogIn className="h-4 w-4" />
+                      <span>
+                        {busy
+                          ? tr('Memverifikasi sesi...', 'Verifying session...')
+                          : tr('Masuk ke Sistem ERP', 'Sign In to ERP')}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <UserPlus className="h-4 w-4" />
+                      <span>
+                        {busy
+                          ? tr('Mendaftarkan akun...', 'Registering account...')
+                          : tr('Daftar & Buat Workspace', 'Register & Create Workspace')}
+                      </span>
+                    </>
+                  )}
                 </button>
+              </form>
 
-                {inIframe ? (
-                  <a
-                    href={typeof window !== 'undefined' ? window.location.href : '#'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full min-h-[40px] px-3 py-2 rounded-lg border border-slate-200 bg-slate-50/80 hover:bg-slate-100 text-xs font-medium text-[#1B5E99] flex items-center justify-center gap-2 transition-colors"
-                  >
-                    <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                    <span>
-                      {tr(
-                        'Login di HP tertahan? Buka di Tab Browser Penuh',
-                        'Stuck on mobile? Open in Full Browser Tab'
-                      )}
+              {onGoogleLogin && (
+                <>
+                  <div className="relative flex items-center py-0.5">
+                    <div className="flex-grow border-t border-slate-200" />
+                    <span className="mx-3 shrink text-[11px] font-medium text-slate-400 uppercase">
+                      {tr('atau', 'or')}
                     </span>
-                  </a>
-                ) : (
-                  onGoogleRedirectLogin && (
-                    <button
-                      type="button"
-                      onClick={onGoogleRedirectLogin}
-                      className="w-full min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-medium text-[#1B5E99] hover:text-[#0B1B3A] hover:bg-slate-50 transition-colors cursor-pointer"
-                    >
-                      {tr(
-                        'Popup di HP tidak merespons? Masuk via Redirect Halaman',
-                        'Mobile popup not responding? Sign in via Page Redirect'
-                      )}
-                    </button>
-                  )
-                )}
-              </div>
+                    <div className="flex-grow border-t border-slate-200" />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={onGoogleLogin}
+                    disabled={busy}
+                    className={cn(
+                      'w-full min-h-[42px] px-4 py-2 rounded-xl font-semibold text-xs',
+                      'border border-slate-200 bg-white text-[#0B1B3A] hover:bg-slate-50',
+                      'transition-colors flex items-center justify-center gap-2.5 cursor-pointer',
+                      'disabled:opacity-60 disabled:cursor-not-allowed'
+                    )}
+                  >
+                    <GoogleMark />
+                    <span>{tr('Lanjutkan dengan Google (OAuth)', 'Continue with Google (OAuth)')}</span>
+                  </button>
+                </>
+              )}
 
               {/* Calm Single-Line Access Note */}
-              <div className="pt-4 border-t border-slate-100 flex items-start gap-2 text-[11.5px] text-slate-500 leading-relaxed">
+              <div className="pt-3 border-t border-slate-100 flex items-start gap-2 text-[11.5px] text-slate-500 leading-relaxed">
                 <Lock className="h-3.5 w-3.5 text-[#1B5E99] shrink-0 mt-0.5" aria-hidden="true" />
                 <span>
                   {tr(
-                    'Akses terbatas untuk karyawan & investor dengan email terdaftar oleh Direktur (RBAC 8-Role).',
-                    'Restricted to employees & investors with email addresses registered by Direktur (8-Role RBAC).'
+                    'Otentikasi & isolasi data multi-tenant diamankan melalui Supabase Auth + Row Level Security (RBAC 8-Role).',
+                    'Authentication & multi-tenant data isolation secured via Supabase Auth + Row Level Security (8-Role RBAC).'
                   )}
                 </span>
               </div>

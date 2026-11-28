@@ -49,10 +49,12 @@ function DomestiqHubApp() {
   if (erp.authMode === 'unauthenticated' || !erp.currentUser) {
     return (
       <LoginView
+        onEmailLogin={erp.loginWithEmail}
+        onEmailRegister={erp.registerWithEmail}
         onGoogleLogin={erp.loginWithGoogle}
-        onGoogleRedirectLogin={erp.loginWithGoogleRedirect}
         busy={erp.authBusy}
-        error={erp.firestoreError}
+        error={erp.authError}
+        infoMessage={erp.authInfo}
       />
     );
   }

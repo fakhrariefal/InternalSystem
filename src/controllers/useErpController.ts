@@ -1,15 +1,7 @@
-import {
-  getRedirectResult,
-  onAuthStateChanged,
-  onIdTokenChanged,
-  signInWithPopup,
-  signInWithRedirect,
-  signOut,
-  type User as FirebaseUser,
-} from 'firebase/auth';
+import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { auth, googleProvider } from '../lib/firebase';
+import { supabase } from '../lib/supabase';
 import {
   calculateOrderTotals,
   canTransitionPoStatus,
@@ -22,10 +14,9 @@ import {
   findSeededDummyAccountingTargets,
   findSeededDummyMasterTargets,
   findSeededDummyOrderTargets,
-  formatFirebaseAuthErrorMessage,
+  formatSupabaseAuthErrorMessage,
   getEffectiveTaxRatePercent,
   isBuyerTopScheme,
-  shouldFallbackToRedirectAuth,
   isDateInClosedPeriod,
   isEmailRegistered,
   isServiceOrderItem,
@@ -108,36 +99,38 @@ import {
   appendInvoicePayment,
   appendPoLog,
   createImmutableRecord,
-  deleteFirestoreDoc,
-  deleteFirestoreDocsInChunks,
   deleteInvoicesWithPayments,
   deletePurchaseOrdersWithLogs,
+  deleteSupabaseMixedEntries,
+  deleteSupabaseRecord,
   ensureAuthenticatedUserProfile,
-  markNotificationReadInFirestore,
-  markSeedCompletedInFirestore,
-  resetTotalDatabaseInFirestore,
-  saveFirestoreDoc,
-  seedFirestoreDatabaseIfNeeded,
+  makeUuid,
+  markNotificationReadInSupabase,
+  markSeedCompletedInSupabase,
+  resetTotalDatabaseInSupabase,
+  saveSupabaseRecord,
   subscribeErpCollections,
   uploadFileToStorage,
   uploadPartnerDocument,
   uploadPodDocument,
-  upsertFirestoreDocNoCreatedAt,
-} from '../services/firestoreService';
+  upsertPeriodOrBudget,
+  type LogicalCollectionKey,
+} from '../services/supabaseService';
 
-export type AuthMode = 'loading' | 'unauthenticated' | 'firebase' | 'preview';
+export type AuthMode = 'loading' | 'unauthenticated' | 'supabase' | 'preview';
 
-function makeId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+function makeId(_prefix?: string): string {
+  return makeUuid();
 }
 
 export function useErpController() {
   const [authMode, setAuthMode] = useState<AuthMode>('loading');
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [supabaseUser, setSupabaseUser] = useState<SupabaseUser | null>(null);
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [activeModule, setActiveModule] = useState<AppModule>('dashboard');
   const [state, setState] = useState<ErpState>(() => createEmptyErpState());
-  const [firestoreError, setFirestoreError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const authModeRef = useRef<AuthMode>('loading');
   const hydratingSessionRef = useRef<{ uid: string; promise: Promise<boolean> } | null>(null);
@@ -146,135 +139,62 @@ export function useErpController() {
     authModeRef.current = authMode;
   }, [authMode]);
 
-  const REDIRECT_PENDING_KEY = 'domestiq_google_redirect_pending';
+  const activeCompanyId = currentUser?.companyId || state.settings.id || '';
 
-  const clearRedirectPendingFlag = () => {
-    try {
-      window.sessionStorage.removeItem(REDIRECT_PENDING_KEY);
-    } catch {
-      // ignore storage restrictions
-    }
-  };
-
-  const isEmbeddedIframe = (): boolean => {
-    try {
-      return window.self !== window.top;
-    } catch {
-      return true;
-    }
-  };
-
-  const hydrateFirebaseSession = useCallback(async (user: FirebaseUser): Promise<boolean> => {
-    if (hydratingSessionRef.current?.uid === user.uid) {
+  const hydrateSupabaseSession = useCallback(async (user: SupabaseUser): Promise<boolean> => {
+    if (hydratingSessionRef.current?.uid === user.id) {
       return hydratingSessionRef.current.promise;
     }
 
     const run = (async (): Promise<boolean> => {
-      setFirebaseUser(user);
+      setSupabaseUser(user);
       setAuthMode((prev) => (prev === 'preview' ? 'preview' : 'loading'));
       try {
-        const resolvedEmail =
-          user.email || user.providerData?.find((p) => p?.email)?.email || '';
+        const resolvedEmail = user.email || '';
         if (!resolvedEmail.trim()) {
-          await signOut(auth);
+          await supabase.auth.signOut();
           setCurrentUser(null);
-          setFirebaseUser(null);
-          setFirestoreError(
-            'Email akun Google tidak terbaca dari sesi otentikasi. Silakan masuk ulang menggunakan akun Google utama.'
-          );
+          setSupabaseUser(null);
+          setAuthError('Email akun tidak terbaca dari sesi Supabase Auth. Silakan masuk ulang.');
           setAuthMode('unauthenticated');
           return false;
         }
 
-        const withTimeout = async <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
-          let timer: number | undefined;
-          try {
-            return await Promise.race([
-              promise,
-              new Promise<T>((_, reject) => {
-                timer = window.setTimeout(() => {
-                  reject(new Error(`${label} timeout setelah ${ms / 1000}s. Periksa koneksi / Firestore database ID / rules.`));
-                }, ms);
-              }),
-            ]);
-          } finally {
-            if (timer !== undefined) window.clearTimeout(timer);
-          }
-        };
-
-        const loadProfileWithRetry = async () => {
-          try {
-            await user.getIdToken();
-            return await withTimeout(
-              ensureAuthenticatedUserProfile({
-                uid: user.uid,
-                email: resolvedEmail,
-                displayName: user.displayName || 'User Domestiq',
-                photoURL: user.photoURL || '',
-              }),
-              12000,
-              'Memuat profil Firestore'
-            );
-          } catch (firstErr) {
-            await new Promise((resolve) => window.setTimeout(resolve, 600));
-            try {
-              await user.getIdToken(true);
-            } catch {
-              // continue retry attempt even if forced refresh fails
-            }
-            return await withTimeout(
-              ensureAuthenticatedUserProfile({
-                uid: user.uid,
-                email: resolvedEmail,
-                displayName: user.displayName || 'User Domestiq',
-                photoURL: user.photoURL || '',
-              }),
-              12000,
-              'Memuat profil Firestore (retry)'
-            ).catch(() => {
-              throw firstErr;
-            });
-          }
-        };
-
-        const profile = await loadProfileWithRetry();
+        const profile = await ensureAuthenticatedUserProfile(user);
         if (!profile.active) {
-          await signOut(auth);
+          await supabase.auth.signOut();
           setCurrentUser(null);
-          setFirebaseUser(null);
-          setFirestoreError('Akun Anda saat ini nonaktif. Hubungi Direktur PT Domestiq Hub Indonesia.');
+          setSupabaseUser(null);
+          setAuthError('Akun Anda saat ini nonaktif. Hubungi Direktur perusahaan Anda.');
           setAuthMode('unauthenticated');
           return false;
         }
-        clearRedirectPendingFlag();
-        setFirestoreError(null);
+
+        setAuthError(null);
+        setAuthInfo(null);
         setCurrentUser(profile);
-        setAuthMode('firebase');
+        setAuthMode('supabase');
         setAuthBusy(false);
-        if (profile.role === 'Direktur') {
-          void seedFirestoreDatabaseIfNeeded(user.uid).catch((seedErr) => {
-            console.warn('[Domestiq Hub] Background Firestore seed warning:', seedErr);
-          });
-        }
         return true;
       } catch (err) {
-        const friendly = formatFirebaseAuthErrorMessage(err);
-        setFirestoreError(friendly);
+        const friendly = formatSupabaseAuthErrorMessage(err);
+        setAuthError(friendly);
         setCurrentUser(null);
         setAuthMode('unauthenticated');
+        setAuthBusy(false);
         return false;
       } finally {
-        if (hydratingSessionRef.current?.uid === user.uid) {
+        if (hydratingSessionRef.current?.uid === user.id) {
           hydratingSessionRef.current = null;
         }
       }
     })();
 
-    hydratingSessionRef.current = { uid: user.uid, promise: run };
+    hydratingSessionRef.current = { uid: user.id, promise: run };
     return run;
   }, []);
 
-  // Check ?autostart=1 for automated preview verification & handle Firebase Auth boot + mobile redirect recovery
+  // Check ?autostart=1 for automated preview verification & handle Supabase Auth boot
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('autostart') === '1') {
@@ -286,186 +206,77 @@ export function useErpController() {
     }
 
     let cancelled = false;
-    let redirectCheckSettled = false;
-    let resumePollTimer: number | null = null;
 
     const bootTimeoutId = window.setTimeout(() => {
       if (cancelled) return;
       if (authModeRef.current === 'loading') {
-        console.warn('[Domestiq Hub] Auth boot timeout — forcing login screen');
-        redirectCheckSettled = true;
+        console.warn('[Domestiq Hub] Supabase Auth boot timeout — showing login screen');
         setAuthBusy(false);
-        setFirebaseUser(null);
+        setSupabaseUser(null);
         setCurrentUser(null);
         setAuthMode('unauthenticated');
-        setFirestoreError(
-          'Sesi otentikasi/profil memakan waktu terlalu lama. Kemungkinan: domain Auth, Firestore database ID, atau rules users. Coba login ulang atau mode demo.'
-        );
       }
-    }, 15000);
+    }, 12000);
 
-    const handleAuthUser = async (user: FirebaseUser | null) => {
-      if (cancelled || authModeRef.current === 'preview') {
-        return;
-      }
-      if (!user) {
-        if (!redirectCheckSettled) {
+    const initSession = async () => {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (cancelled || authModeRef.current === 'preview') return;
+        if (error) {
+          setAuthError(formatSupabaseAuthErrorMessage(error));
+          setSupabaseUser(null);
+          setCurrentUser(null);
+          setAuthMode('unauthenticated');
           return;
         }
-        setFirebaseUser(null);
-        setCurrentUser(null);
-        setAuthMode('unauthenticated');
-        return;
-      }
-      await hydrateFirebaseSession(user);
-    };
-
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
-      void handleAuthUser(user);
-    });
-
-    const unsubToken = onIdTokenChanged(auth, (user) => {
-      if (user && authModeRef.current !== 'firebase' && authModeRef.current !== 'preview') {
-        void handleAuthUser(user);
-      }
-    });
-
-    const checkBootAuth = async () => {
-      try {
-        const redirectResult = await getRedirectResult(auth);
-        if (cancelled || authModeRef.current === 'preview') return;
-        if (redirectResult?.user) {
-          redirectCheckSettled = true;
-          const ok = await hydrateFirebaseSession(redirectResult.user);
-          if (ok) {
-            toast.success('Berhasil masuk dengan akun Google.');
-          }
-          return;
+        if (data.session?.user) {
+          await hydrateSupabaseSession(data.session.user);
+        } else {
+          setSupabaseUser(null);
+          setCurrentUser(null);
+          setAuthMode('unauthenticated');
         }
       } catch (err) {
         if (!cancelled) {
-          clearRedirectPendingFlag();
-          setFirestoreError(formatFirebaseAuthErrorMessage(err));
+          setAuthError(formatSupabaseAuthErrorMessage(err));
+          setSupabaseUser(null);
+          setCurrentUser(null);
+          setAuthMode('unauthenticated');
         }
       }
+    };
 
-      try {
-        await auth.authStateReady();
-      } catch {
-        // ignore authStateReady errors and inspect auth.currentUser directly
-      }
+    void initSession();
 
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
       if (cancelled || authModeRef.current === 'preview') return;
-      redirectCheckSettled = true;
-
-      if (auth.currentUser) {
-        await hydrateFirebaseSession(auth.currentUser);
-        return;
+      if (session?.user) {
+        void hydrateSupabaseSession(session.user);
+      } else {
+        setSupabaseUser(null);
+        setCurrentUser(null);
+        setAuthMode('unauthenticated');
       }
-
-      let hadPendingRedirect = false;
-      try {
-        hadPendingRedirect = window.sessionStorage.getItem(REDIRECT_PENDING_KEY) === '1';
-      } catch {
-        hadPendingRedirect = false;
-      }
-      if (hadPendingRedirect) {
-        clearRedirectPendingFlag();
-        setFirestoreError(
-          'Browser mobile membatasi pengembalian sesi redirect Google (privasi/cookie lintas situs). Silakan coba "Masuk dengan Google" (popup) atau buka portal langsung di tab browser Chrome/Safari utama.'
-        );
-      }
-      setFirebaseUser(null);
-      setCurrentUser(null);
-      setAuthMode('unauthenticated');
-    };
-
-    void checkBootAuth();
-
-    const probeAuthSession = async (): Promise<boolean> => {
-      if (cancelled || authModeRef.current === 'preview' || authModeRef.current === 'firebase') {
-        return true;
-      }
-      try {
-        await auth.authStateReady();
-        const candidate = auth.currentUser || (await getRedirectResult(auth))?.user || null;
-        if (candidate && !cancelled) {
-          const ok = await hydrateFirebaseSession(candidate);
-          if (ok) {
-            toast.success('Berhasil masuk dengan akun Google.');
-          }
-          setAuthBusy(false);
-          return true;
-        }
-      } catch {
-        // ignore transient resume checks
-      }
-      return false;
-    };
-
-    const syncSessionOnResume = () => {
-      if (cancelled || authModeRef.current === 'preview' || authModeRef.current === 'firebase') {
-        return;
-      }
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-        return;
-      }
-      if (resumePollTimer !== null) {
-        window.clearInterval(resumePollTimer);
-        resumePollTimer = null;
-      }
-      let attempts = 0;
-      const runProbe = async () => {
-        attempts += 1;
-        const found = await probeAuthSession();
-        if (found || attempts >= 12 || cancelled || authModeRef.current === 'firebase') {
-          if (resumePollTimer !== null) {
-            window.clearInterval(resumePollTimer);
-            resumePollTimer = null;
-          }
-          if (!found && !cancelled && authModeRef.current === 'unauthenticated' && !auth.currentUser) {
-            setAuthBusy(false);
-          }
-        }
-      };
-      void runProbe();
-      resumePollTimer = window.setInterval(() => {
-        void runProbe();
-      }, 400);
-    };
-
-    const handleStorageSync = (ev: StorageEvent) => {
-      if (!ev.key || ev.key.includes('firebase:authUser')) {
-        void probeAuthSession();
-      }
-    };
-
-    window.addEventListener('focus', syncSessionOnResume);
-    window.addEventListener('pageshow', syncSessionOnResume);
-    window.addEventListener('storage', handleStorageSync);
-    document.addEventListener('visibilitychange', syncSessionOnResume);
+    });
 
     return () => {
       cancelled = true;
       window.clearTimeout(bootTimeoutId);
-      if (resumePollTimer !== null) {
-        window.clearInterval(resumePollTimer);
-      }
-      unsubAuth();
-      unsubToken();
-      window.removeEventListener('focus', syncSessionOnResume);
-      window.removeEventListener('pageshow', syncSessionOnResume);
-      window.removeEventListener('storage', handleStorageSync);
-      document.removeEventListener('visibilitychange', syncSessionOnResume);
+      authListener.subscription.unsubscribe();
     };
-  }, [hydrateFirebaseSession]);
+  }, [hydrateSupabaseSession]);
 
   useEffect(() => {
-    if (authMode !== 'firebase' || !firebaseUser || !currentUser) return;
-    setState(createEmptyErpState());
+    if (authMode !== 'supabase' || !supabaseUser || !currentUser?.companyId) return;
+    const companyId = currentUser.companyId;
+    setState((prev) => ({
+      ...createEmptyErpState(),
+      settings: { ...prev.settings, id: companyId },
+    }));
     const includeUsers =
       currentUser.role === 'Direktur' || currentUser.role === 'Manager';
     const unsub = subscribeErpCollections(
+      companyId,
       (partial) => {
         setState((prev) => ({
           ...prev,
@@ -473,80 +284,144 @@ export function useErpController() {
         }));
       },
       (err) => {
-        setFirestoreError(formatFirebaseAuthErrorMessage(err));
-        toast.error('Terjadi gangguan izin atau koneksi Firestore.');
+        setAuthError(formatSupabaseAuthErrorMessage(err));
+        toast.error('Terjadi gangguan izin RLS atau koneksi database Supabase.');
       },
-      { includeUsers, currentUserUid: firebaseUser.uid }
+      { includeUsers, currentUserUid: currentUser.uid }
     );
     return () => unsub();
-  }, [authMode, currentUser, firebaseUser]);
+  }, [authMode, currentUser, supabaseUser]);
 
-  const loginWithGoogleRedirect = useCallback(async () => {
-    if (isEmbeddedIframe()) {
-      const msg =
-        'Portal sedang berjalan di dalam frame pratinjau sehingga Google memblokir redirect. Ketuk "Buka di Tab Browser Penuh" di bawah lalu masuk ulang.';
-      setFirestoreError(msg);
-      toast.error(msg);
-      return;
-    }
-    setAuthBusy(true);
-    setFirestoreError(null);
-    try {
-      try {
-        window.sessionStorage.setItem(REDIRECT_PENDING_KEY, '1');
-      } catch {
-        // ignore storage errors
+  const loginWithEmail = useCallback(
+    async (email: string, password: string): Promise<boolean> => {
+      const cleanEmail = normalizeUserEmail(email);
+      if (!isValidEmailFormat(cleanEmail)) {
+        const msg = 'Format email tidak valid.';
+        setAuthError(msg);
+        toast.error(msg);
+        return false;
       }
-      await signInWithRedirect(auth, googleProvider);
+      if (!password || password.length < 6) {
+        const msg = 'Kata sandi minimal 6 karakter.';
+        setAuthError(msg);
+        toast.error(msg);
+        return false;
+      }
+      setAuthBusy(true);
+      setAuthError(null);
+      setAuthInfo(null);
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password,
+        });
+        if (error) throw error;
+        if (!data.user) {
+          throw new Error('Sesi pengguna tidak ditemukan.');
+        }
+        const ok = await hydrateSupabaseSession(data.user);
+        if (ok) {
+          toast.success('Berhasil masuk ke sistem ERP.');
+        }
+        return ok;
+      } catch (err) {
+        const msg = formatSupabaseAuthErrorMessage(err);
+        setAuthError(msg);
+        toast.error(msg);
+        return false;
+      } finally {
+        setAuthBusy(false);
+      }
+    },
+    [hydrateSupabaseSession]
+  );
+
+  const registerWithEmail = useCallback(
+    async (input: {
+      displayName: string;
+      companyName: string;
+      email: string;
+      password: string;
+    }): Promise<boolean> => {
+      const cleanName = sanitizeString(input.displayName, 120);
+      const cleanCompany = sanitizeString(input.companyName, 160) || 'PT Domestiq Hub Indonesia';
+      const cleanEmail = normalizeUserEmail(input.email);
+      if (cleanName.length < 2) {
+        const msg = 'Nama lengkap minimal 2 karakter.';
+        setAuthError(msg);
+        toast.error(msg);
+        return false;
+      }
+      if (!isValidEmailFormat(cleanEmail)) {
+        const msg = 'Format email tidak valid.';
+        setAuthError(msg);
+        toast.error(msg);
+        return false;
+      }
+      if (!input.password || input.password.length < 6) {
+        const msg = 'Kata sandi minimal 6 karakter.';
+        setAuthError(msg);
+        toast.error(msg);
+        return false;
+      }
+      setAuthBusy(true);
+      setAuthError(null);
+      setAuthInfo(null);
+      try {
+        const { data, error } = await supabase.auth.signUp({
+          email: cleanEmail,
+          password: input.password,
+          options: {
+            data: {
+              display_name: cleanName,
+              company_name: cleanCompany,
+            },
+          },
+        });
+        if (error) throw error;
+        if (data.session && data.user) {
+          const ok = await hydrateSupabaseSession(data.user);
+          if (ok) {
+            toast.success('Akun & workspace perusahaan berhasil dibuat!');
+          }
+          return ok;
+        }
+        const msg =
+          'Pendaftaran berhasil! Silakan periksa kotak masuk email Anda untuk konfirmasi sebelum masuk.';
+        setAuthInfo(msg);
+        toast.success(msg);
+        return true;
+      } catch (err) {
+        const msg = formatSupabaseAuthErrorMessage(err);
+        setAuthError(msg);
+        toast.error(msg);
+        return false;
+      } finally {
+        setAuthBusy(false);
+      }
+    },
+    [hydrateSupabaseSession]
+  );
+
+  const loginWithGoogle = useCallback(async () => {
+    setAuthBusy(true);
+    setAuthError(null);
+    setAuthInfo(null);
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+        },
+      });
+      if (error) throw error;
     } catch (err) {
-      clearRedirectPendingFlag();
-      const msg = formatFirebaseAuthErrorMessage(err);
-      setFirestoreError(msg);
+      const msg = formatSupabaseAuthErrorMessage(err);
+      setAuthError(msg);
       toast.error(msg);
       setAuthBusy(false);
     }
   }, []);
-
-  const loginWithGoogle = useCallback(async () => {
-    setAuthBusy(true);
-    setFirestoreError(null);
-    try {
-      const credential = await signInWithPopup(auth, googleProvider);
-      const signedUser = credential.user || auth.currentUser;
-      if (!signedUser) {
-        throw new Error('Sesi Google tidak ditemukan setelah otentikasi.');
-      }
-      const hydrated = await hydrateFirebaseSession(signedUser);
-      if (hydrated) {
-        toast.success('Berhasil masuk dengan akun Google.');
-      } else {
-        toast.error('Akun Google terautentikasi, namun profil Firestore gagal dimuat. Periksa pesan di halaman login.');
-      }
-    } catch (err) {
-      if (shouldFallbackToRedirectAuth(err, isEmbeddedIframe())) {
-        try {
-          try {
-            window.sessionStorage.setItem(REDIRECT_PENDING_KEY, '1');
-          } catch {
-            // ignore storage errors
-          }
-          await signInWithRedirect(auth, googleProvider);
-          return;
-        } catch (redirectErr) {
-          clearRedirectPendingFlag();
-          const rMsg = formatFirebaseAuthErrorMessage(redirectErr);
-          setFirestoreError(rMsg);
-          toast.error(rMsg);
-          return;
-        }
-      }
-      const msg = formatFirebaseAuthErrorMessage(err);
-      setFirestoreError(msg);
-      toast.error(msg);
-    } finally {
-      setAuthBusy(false);
-    }
-  }, [hydrateFirebaseSession]);
 
   const enterPreviewMode = useCallback((role: UserRole = 'Direktur') => {
     const seed = createInitialSeedState();
@@ -587,11 +462,11 @@ export function useErpController() {
   }, [currentUser, activeModule]);
 
   const logout = useCallback(async () => {
-    if (authMode === 'firebase') {
-      await signOut(auth);
+    if (authMode === 'supabase') {
+      await supabase.auth.signOut();
     }
     setCurrentUser(null);
-    setFirebaseUser(null);
+    setSupabaseUser(null);
     setState(createEmptyErpState());
     setAuthMode('unauthenticated');
     setActiveModule('dashboard');
@@ -622,23 +497,23 @@ export function useErpController() {
         ...prev,
         auditLogs: [entry, ...prev.auditLogs],
       }));
-      if (authMode === 'firebase') {
-        await createImmutableRecord('auditLogs', entry.id, { ...entry });
+      if (authMode === 'supabase' && activeCompanyId) {
+        await createImmutableRecord('auditLogs', entry.id, { ...entry }, activeCompanyId);
       }
     },
-    [authMode, currentUser]
+    [activeCompanyId, authMode, currentUser]
   );
 
-  const ensureSeedLockedInFirebase = useCallback(async () => {
+  const ensureSeedLocked = useCallback(async () => {
     if (!currentUser || state.settings.initialSeedCompleted) return;
     setState((prev) => ({
       ...prev,
       settings: { ...prev.settings, initialSeedCompleted: true },
     }));
-    if (authMode === 'firebase') {
-      await markSeedCompletedInFirestore(currentUser.uid, state.settings);
+    if (authMode === 'supabase' && activeCompanyId) {
+      await markSeedCompletedInSupabase(activeCompanyId, currentUser.uid);
     }
-  }, [authMode, currentUser, state.settings]);
+  }, [activeCompanyId, authMode, currentUser, state.settings.initialSeedCompleted]);
 
   const buildResolvedJournalEntry = useCallback(
     (params: {
@@ -729,7 +604,7 @@ export function useErpController() {
       const now = new Date().toISOString();
       const existing = state.suppliers.find((s) => s.id === input.id);
       const isAdmin = hasPermission(currentUser.role, 'partner:approve');
-      const uploadMode = authMode === 'firebase' ? 'firebase' : 'preview';
+      const uploadMode = authMode === 'supabase' ? 'supabase' : 'preview';
 
       let nibDocUrl = input.nibDocUrl ?? existing?.nibDocUrl;
       let nibFileName = input.nibFileName ?? existing?.nibFileName;
@@ -740,17 +615,17 @@ export function useErpController() {
 
       try {
         if (input.nibFile) {
-          const uploaded = await uploadPartnerDocument(input.nibFile, uploadMode);
+          const uploaded = await uploadPartnerDocument(input.nibFile, uploadMode, 'partner-docs', activeCompanyId);
           nibDocUrl = uploaded.url;
           nibFileName = uploaded.fileName;
         }
         if (input.npwpFile) {
-          const uploaded = await uploadPartnerDocument(input.npwpFile, uploadMode);
+          const uploaded = await uploadPartnerDocument(input.npwpFile, uploadMode, 'partner-docs', activeCompanyId);
           npwpDocUrl = uploaded.url;
           npwpFileName = uploaded.fileName;
         }
         if (input.ktpDirectorFile) {
-          const uploaded = await uploadPartnerDocument(input.ktpDirectorFile, uploadMode);
+          const uploaded = await uploadPartnerDocument(input.ktpDirectorFile, uploadMode, 'partner-docs', activeCompanyId);
           ktpDirectorDocUrl = uploaded.url;
           ktpDirectorFileName = uploaded.fileName;
         }
@@ -813,14 +688,14 @@ export function useErpController() {
           : prev.suppliers.map((s) => (s.id === supplier.id ? { ...s, ...supplier, createdAt: s.createdAt } : s)),
       }));
 
-      if (authMode === 'firebase') {
-        const firestorePayload: Record<string, unknown> = { ...supplier };
+      if (authMode === 'supabase' && activeCompanyId) {
+        const payload: Record<string, unknown> = { ...supplier };
         if (!isAdmin && !input.isNew) {
-          delete firestorePayload.verificationStatus;
-          delete firestorePayload.verifiedBy;
-          delete firestorePayload.verifiedAt;
+          delete payload.verificationStatus;
+          delete payload.verifiedBy;
+          delete payload.verifiedAt;
         }
-        await saveFirestoreDoc('suppliers', supplier.id, firestorePayload, input.isNew);
+        await saveSupabaseRecord('suppliers', supplier.id, payload, input.isNew, activeCompanyId);
       }
       await recordAudit(
         'Master Data',
@@ -836,7 +711,7 @@ export function useErpController() {
       );
       return true;
     },
-    [authMode, currentUser, recordAudit, state.settings.supplierCategories, state.suppliers]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.settings.supplierCategories, state.suppliers]
   );
 
   const saveSupplierCategories = useCallback(
@@ -877,9 +752,10 @@ export function useErpController() {
       const now = new Date().toISOString();
       const prevSettings = state.settings;
       const prevSuppliers = state.suppliers;
+      const targetCompanyId = activeCompanyId || state.settings.id || 'company';
       const updatedSettings: CompanySettings = {
         ...state.settings,
-        id: 'company',
+        id: targetCompanyId,
         supplierCategories: deduped,
         updatedBy: currentUser.uid,
         updatedAt: now,
@@ -903,19 +779,21 @@ export function useErpController() {
         suppliers: nextSuppliers,
       }));
       try {
-        if (authMode === 'firebase') {
-          await saveFirestoreDoc(
+        if (authMode === 'supabase' && activeCompanyId) {
+          await saveSupabaseRecord(
             'settings',
-            'company',
+            activeCompanyId,
             { supplierCategories: deduped, updatedBy: currentUser.uid },
-            false
+            false,
+            activeCompanyId
           );
           for (const sup of affectedSuppliers) {
-            await saveFirestoreDoc(
+            await saveSupabaseRecord(
               'suppliers',
               sup.id,
               { vendorCategory: renameMap!.to },
-              false
+              false,
+              activeCompanyId
             );
           }
         }
@@ -924,7 +802,7 @@ export function useErpController() {
           renameMap
             ? `Ubah Kategori Supplier (${renameMap.from} -> ${renameMap.to})`
             : 'Update Kategori Supplier',
-          'company',
+          targetCompanyId,
           'Kategori Supplier',
           `${deduped.length} kategori aktif`
         );
@@ -936,7 +814,7 @@ export function useErpController() {
         return false;
       }
     },
-    [authMode, currentUser, recordAudit, state.settings, state.suppliers]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.settings, state.suppliers]
   );
 
   const verifySupplier = useCallback(
@@ -964,8 +842,8 @@ export function useErpController() {
             : s
         ),
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc(
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord(
           'suppliers',
           supplierId,
           {
@@ -974,14 +852,15 @@ export function useErpController() {
             verifiedAt: now,
             active,
           },
-          false
+          false,
+          activeCompanyId
         );
       }
       await recordAudit('Master Data', `Verifikasi Supplier -> ${status}`, supplierId, target.name);
       toast.success(`Status Supplier ${target.name} diperbarui menjadi ${status}.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.suppliers]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.suppliers]
   );
 
   const saveCustomer = useCallback(
@@ -1006,7 +885,7 @@ export function useErpController() {
       const now = new Date().toISOString();
       const existing = state.customers.find((c) => c.id === input.id);
       const isAdmin = hasPermission(currentUser.role, 'partner:approve');
-      const uploadMode = authMode === 'firebase' ? 'firebase' : 'preview';
+      const uploadMode = authMode === 'supabase' ? 'supabase' : 'preview';
 
       let nibDocUrl = input.nibDocUrl ?? existing?.nibDocUrl;
       let nibFileName = input.nibFileName ?? existing?.nibFileName;
@@ -1015,12 +894,12 @@ export function useErpController() {
 
       try {
         if (input.nibFile) {
-          const uploaded = await uploadPartnerDocument(input.nibFile, uploadMode);
+          const uploaded = await uploadPartnerDocument(input.nibFile, uploadMode, 'partner-docs', activeCompanyId);
           nibDocUrl = uploaded.url;
           nibFileName = uploaded.fileName;
         }
         if (input.npwpFile) {
-          const uploaded = await uploadPartnerDocument(input.npwpFile, uploadMode);
+          const uploaded = await uploadPartnerDocument(input.npwpFile, uploadMode, 'partner-docs', activeCompanyId);
           npwpDocUrl = uploaded.url;
           npwpFileName = uploaded.fileName;
         }
@@ -1105,15 +984,15 @@ export function useErpController() {
           : prev.customers.map((c) => (c.id === customer.id ? { ...c, ...customer, createdAt: c.createdAt } : c)),
       }));
 
-      if (authMode === 'firebase') {
-        const firestorePayload: Record<string, unknown> = { ...customer };
+      if (authMode === 'supabase' && activeCompanyId) {
+        const payload: Record<string, unknown> = { ...customer };
         if (!isAdmin && !input.isNew) {
-          delete firestorePayload.creditLimit;
-          delete firestorePayload.verificationStatus;
-          delete firestorePayload.verifiedBy;
-          delete firestorePayload.verifiedAt;
+          delete payload.creditLimit;
+          delete payload.verificationStatus;
+          delete payload.verifiedBy;
+          delete payload.verifiedAt;
         }
-        await saveFirestoreDoc('customers', customer.id, firestorePayload, input.isNew);
+        await saveSupabaseRecord('customers', customer.id, payload, input.isNew, activeCompanyId);
       }
 
       await recordAudit(
@@ -1130,7 +1009,7 @@ export function useErpController() {
       );
       return true;
     },
-    [authMode, currentUser, recordAudit, state.customers]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.customers]
   );
 
   const approveBuyerWithCreditLimit = useCallback(
@@ -1167,8 +1046,8 @@ export function useErpController() {
             : c
         ),
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc(
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord(
           'customers',
           customerId,
           {
@@ -1178,7 +1057,8 @@ export function useErpController() {
             verifiedAt: now,
             active,
           },
-          false
+          false,
+          activeCompanyId
         );
       }
       await recordAudit(
@@ -1191,7 +1071,7 @@ export function useErpController() {
       toast.success(`Buyer ${target.name} diperbarui (${input.verificationStatus}, Limit Rp ${limit.toLocaleString('id-ID')}).`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.customers]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.customers]
   );
 
   const saveWarehouse = useCallback(
@@ -1218,13 +1098,13 @@ export function useErpController() {
           ? [...prev.warehouses, wh]
           : prev.warehouses.map((w) => (w.id === wh.id ? { ...w, ...wh, createdAt: w.createdAt } : w)),
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('warehouses', wh.id, { ...wh }, input.isNew);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('warehouses', wh.id, { ...wh }, input.isNew, activeCompanyId);
       }
       await recordAudit('Master Data', input.isNew ? 'Tambah Gudang' : 'Update Gudang', wh.id, wh.name);
       toast.success(`Gudang ${wh.name} tersimpan.`);
     },
-    [authMode, currentUser, recordAudit]
+    [activeCompanyId, authMode, currentUser, recordAudit]
   );
 
   const saveCategory = useCallback(
@@ -1241,12 +1121,12 @@ export function useErpController() {
         createdAt: new Date().toISOString(),
       };
       setState((prev) => ({ ...prev, categories: [...prev.categories, cat] }));
-      if (authMode === 'firebase') {
-        await createImmutableRecord('categories', cat.id, { ...cat });
+      if (authMode === 'supabase' && activeCompanyId) {
+        await createImmutableRecord('categories', cat.id, { ...cat }, activeCompanyId);
       }
       toast.success(`Kategori ${cat.name} ditambahkan.`);
     },
-    [authMode, currentUser]
+    [activeCompanyId, authMode, currentUser]
   );
 
   const saveUom = useCallback(
@@ -1262,12 +1142,12 @@ export function useErpController() {
         createdAt: new Date().toISOString(),
       };
       setState((prev) => ({ ...prev, uoms: [...prev.uoms, uom] }));
-      if (authMode === 'firebase') {
-        await createImmutableRecord('uoms', uom.id, { ...uom });
+      if (authMode === 'supabase' && activeCompanyId) {
+        await createImmutableRecord('uoms', uom.id, { ...uom }, activeCompanyId);
       }
       toast.success(`Satuan ${uom.code} ditambahkan.`);
     },
-    [authMode, currentUser]
+    [activeCompanyId, authMode, currentUser]
   );
 
   const saveProduct = useCallback(
@@ -1283,8 +1163,8 @@ export function useErpController() {
       }
       let imageUrl = input.imageUrl || '';
       if (input.photoFile) {
-        if (authMode === 'firebase') {
-          imageUrl = await uploadFileToStorage('products', input.photoFile);
+        if (authMode === 'supabase') {
+          imageUrl = await uploadFileToStorage('products', input.photoFile, activeCompanyId);
         } else {
           imageUrl = URL.createObjectURL(input.photoFile);
         }
@@ -1321,13 +1201,13 @@ export function useErpController() {
           ? [product, ...prev.products]
           : prev.products.map((p) => (p.id === product.id ? { ...p, ...product, createdAt: p.createdAt } : p)),
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('products', product.id, { ...product }, input.isNew);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('products', product.id, { ...product }, input.isNew, activeCompanyId);
       }
       await recordAudit('Master Data', input.isNew ? 'Tambah Produk' : 'Update Produk', product.id, product.sku);
       toast.success(`Produk ${product.sku} tersimpan.`);
     },
-    [authMode, currentUser, recordAudit, state.categories, state.products]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.categories, state.products]
   );
 
   const deleteProduct = useCallback(
@@ -1342,14 +1222,14 @@ export function useErpController() {
         ...prev,
         products: prev.products.filter((p) => p.id !== id),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('products', id);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('products', id, activeCompanyId);
       }
-      await ensureSeedLockedInFirebase();
+      await ensureSeedLocked();
       await recordAudit('Master Data', 'Hapus Produk', id, target.name, target.sku);
       toast.success(`Produk ${target.name} dihapus.`);
     },
-    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state.products]
+    [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state.products]
   );
 
   const deleteSupplier = useCallback(
@@ -1364,14 +1244,14 @@ export function useErpController() {
         ...prev,
         suppliers: prev.suppliers.filter((s) => s.id !== id),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('suppliers', id);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('suppliers', id, activeCompanyId);
       }
-      await ensureSeedLockedInFirebase();
+      await ensureSeedLocked();
       await recordAudit('Master Data', 'Hapus Supplier', id, target.name, target.code);
       toast.success(`Supplier ${target.name} dihapus.`);
     },
-    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state.suppliers]
+    [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state.suppliers]
   );
 
   const deleteCustomer = useCallback(
@@ -1386,14 +1266,14 @@ export function useErpController() {
         ...prev,
         customers: prev.customers.filter((c) => c.id !== id),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('customers', id);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('customers', id, activeCompanyId);
       }
-      await ensureSeedLockedInFirebase();
+      await ensureSeedLocked();
       await recordAudit('Master Data', 'Hapus Customer', id, target.name, target.code);
       toast.success(`Customer ${target.name} dihapus.`);
     },
-    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state.customers]
+    [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state.customers]
   );
 
   const deleteWarehouse = useCallback(
@@ -1408,14 +1288,14 @@ export function useErpController() {
         ...prev,
         warehouses: prev.warehouses.filter((w) => w.id !== id),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('warehouses', id);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('warehouses', id, activeCompanyId);
       }
-      await ensureSeedLockedInFirebase();
+      await ensureSeedLocked();
       await recordAudit('Master Data', 'Hapus Gudang', id, target.name, target.code);
       toast.success(`Gudang ${target.name} dihapus.`);
     },
-    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state.warehouses]
+    [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state.warehouses]
   );
 
   const deleteCategory = useCallback(
@@ -1430,14 +1310,14 @@ export function useErpController() {
         ...prev,
         categories: prev.categories.filter((c) => c.id !== id),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('categories', id);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('categories', id, activeCompanyId);
       }
-      await ensureSeedLockedInFirebase();
+      await ensureSeedLocked();
       await recordAudit('Master Data', 'Hapus Kategori', id, target.name, target.code);
       toast.success(`Kategori ${target.name} dihapus.`);
     },
-    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state.categories]
+    [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state.categories]
   );
 
   const deleteUom = useCallback(
@@ -1452,14 +1332,14 @@ export function useErpController() {
         ...prev,
         uoms: prev.uoms.filter((u) => u.id !== id),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('uoms', id);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('uoms', id, activeCompanyId);
       }
-      await ensureSeedLockedInFirebase();
+      await ensureSeedLocked();
       await recordAudit('Master Data', 'Hapus Satuan', id, target.code, target.name);
       toast.success(`Satuan ${target.code} dihapus.`);
     },
-    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state.uoms]
+    [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state.uoms]
   );
 
   const clearDummyMasterData = useCallback(async () => {
@@ -1490,19 +1370,19 @@ export function useErpController() {
       uoms: prev.uoms.filter((u) => !uomSet.has(u.id)),
     }));
 
-    if (authMode === 'firebase') {
-      const entries: Array<{ col: string; id: string }> = [
-        ...targets.productIds.map((id) => ({ col: 'products', id })),
-        ...targets.supplierIds.map((id) => ({ col: 'suppliers', id })),
-        ...targets.customerIds.map((id) => ({ col: 'customers', id })),
-        ...targets.warehouseIds.map((id) => ({ col: 'warehouses', id })),
-        ...targets.categoryIds.map((id) => ({ col: 'categories', id })),
-        ...targets.uomIds.map((id) => ({ col: 'uoms', id })),
+    if (authMode === 'supabase' && activeCompanyId) {
+      const entries: Array<{ col: LogicalCollectionKey; id: string }> = [
+        ...targets.productIds.map((id) => ({ col: 'products' as const, id })),
+        ...targets.supplierIds.map((id) => ({ col: 'suppliers' as const, id })),
+        ...targets.customerIds.map((id) => ({ col: 'customers' as const, id })),
+        ...targets.warehouseIds.map((id) => ({ col: 'warehouses' as const, id })),
+        ...targets.categoryIds.map((id) => ({ col: 'categories' as const, id })),
+        ...targets.uomIds.map((id) => ({ col: 'uoms' as const, id })),
       ];
-      await deleteFirestoreDocsInChunks(entries, 10);
+      await deleteSupabaseMixedEntries(entries, activeCompanyId);
     }
 
-    await ensureSeedLockedInFirebase();
+    await ensureSeedLocked();
     await recordAudit(
       'Master Data',
       'Hapus Semua Data Dummy Master',
@@ -1511,7 +1391,7 @@ export function useErpController() {
       `Produk:${targets.productIds.length}, Supplier:${targets.supplierIds.length}, Customer:${targets.customerIds.length}, Gudang:${targets.warehouseIds.length}, Kategori:${targets.categoryIds.length}, Satuan:${targets.uomIds.length}`
     );
     toast.success(`${targets.totalCount} data dummy master berhasil dihapus.`);
-  }, [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state]);
+  }, [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state]);
 
   const updateUserRole = useCallback(
     async (uid: string, role: UserRole, active: boolean) => {
@@ -1529,13 +1409,13 @@ export function useErpController() {
           u.uid === uid ? { ...u, role, active, updatedAt: new Date().toISOString() } : u
         ),
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('users', uid, { role, active }, false);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('users', uid, { role, active }, false, activeCompanyId);
       }
       await recordAudit('System', 'Ubah Role User', uid, role, `Status aktif: ${active}`);
       toast.success('Role & status pengguna diperbarui.');
     },
-    [authMode, currentUser, recordAudit]
+    [activeCompanyId, authMode, currentUser, recordAudit]
   );
 
   const saveUserAccount = useCallback(
@@ -1560,7 +1440,7 @@ export function useErpController() {
         return false;
       }
       if (!isValidEmailFormat(cleanEmail)) {
-        toast.error('Format email Google tidak valid.');
+        toast.error('Format email tidak valid.');
         return false;
       }
       if (isEmailRegistered(state.users, cleanEmail, input.isNew ? undefined : input.uid)) {
@@ -1579,6 +1459,7 @@ export function useErpController() {
       const existing = state.users.find((u) => u.uid === targetUid);
       const userRecord: UserProfile = {
         uid: targetUid,
+        companyId: activeCompanyId || existing?.companyId,
         email: existing ? existing.email : cleanEmail,
         displayName: cleanName,
         role: input.role,
@@ -1596,11 +1477,11 @@ export function useErpController() {
           : prev.users.map((u) => (u.uid === targetUid ? { ...u, ...userRecord } : u)),
       }));
 
-      if (authMode === 'firebase') {
+      if (authMode === 'supabase' && activeCompanyId) {
         if (input.isNew) {
-          await saveFirestoreDoc('users', targetUid, { ...userRecord }, true);
+          await saveSupabaseRecord('users', targetUid, { ...userRecord }, true, activeCompanyId);
         } else {
-          await saveFirestoreDoc(
+          await saveSupabaseRecord(
             'users',
             targetUid,
             {
@@ -1609,7 +1490,8 @@ export function useErpController() {
               role: userRecord.role,
               active: userRecord.active,
             },
-            false
+            false,
+            activeCompanyId
           );
         }
       }
@@ -1628,7 +1510,7 @@ export function useErpController() {
       );
       return true;
     },
-    [authMode, currentUser, recordAudit, state.users]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.users]
   );
 
   const deleteUserAccount = useCallback(
@@ -1646,13 +1528,13 @@ export function useErpController() {
         ...prev,
         users: prev.users.filter((u) => u.uid !== uid),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('users', uid);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('users', uid, activeCompanyId);
       }
       await recordAudit('System', 'Hapus User', uid, target?.email || uid);
       toast.success(`User ${target?.displayName || uid} dihapus.`);
     },
-    [authMode, currentUser, recordAudit, state.users]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.users]
   );
 
   // =========================================================================
@@ -1772,8 +1654,8 @@ export function useErpController() {
 
       const attachmentUrls: string[] = [];
       if (input.attachmentFile) {
-        if (authMode === 'firebase') {
-          attachmentUrls.push(await uploadFileToStorage('po-documents', input.attachmentFile));
+        if (authMode === 'supabase') {
+          attachmentUrls.push(await uploadFileToStorage('po-documents', input.attachmentFile, activeCompanyId));
         } else {
           attachmentUrls.push(`local://doc/${input.attachmentFile.name}`);
         }
@@ -1832,20 +1714,20 @@ export function useErpController() {
       };
 
       setState((prev) => ({ ...prev, purchaseOrders: [newPo, ...prev.purchaseOrders] }));
-      if (authMode === 'firebase') {
+      if (authMode === 'supabase' && activeCompanyId) {
         const poDoc = { ...newPo };
         delete poDoc.logs;
-        await saveFirestoreDoc('purchaseOrders', poId, { ...poDoc, status: 'Draft' }, true);
+        await saveSupabaseRecord('purchaseOrders', poId, { ...poDoc, status: 'Draft' }, true, activeCompanyId);
         if (status === 'Submitted') {
-          await saveFirestoreDoc('purchaseOrders', poId, { status: 'Submitted' }, false);
+          await saveSupabaseRecord('purchaseOrders', poId, { status: 'Submitted' }, false, activeCompanyId);
         }
-        await appendPoLog(poId, initialLog);
+        await appendPoLog(poId, initialLog, activeCompanyId);
       }
       await recordAudit('Procurement', `Buat ${poNumber}`, poId, poNumber, `Status: ${status}`);
       toast.success(`${poNumber} berhasil dibuat (${status}).`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.products, state.purchaseOrders, state.settings, state.suppliers, state.warehouses]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.products, state.purchaseOrders, state.settings, state.suppliers, state.warehouses]
   );
 
   const transitionPurchaseOrder = useCallback(
@@ -1939,8 +1821,8 @@ export function useErpController() {
         ),
       }));
 
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc(
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord(
           'purchaseOrders',
           poId,
           {
@@ -1948,14 +1830,15 @@ export function useErpController() {
             approvedBy,
             ...(directorApprovedBy ? { directorApprovedBy } : {}),
           },
-          false
+          false,
+          activeCompanyId
         );
-        await appendPoLog(poId, logEntry);
+        await appendPoLog(poId, logEntry, activeCompanyId);
       }
       await recordAudit('Procurement', `${po.poNumber} -> ${nextStatus}`, poId, po.poNumber);
       toast.success(`${po.poNumber} diperbarui ke ${nextStatus}.`);
     },
-    [authMode, currentUser, recordAudit, state.purchaseOrders, state.settings.defaultExchangeRateUsdIdr, state.settings.managerApprovalLimitIdr, state.suppliers]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.purchaseOrders, state.settings.defaultExchangeRateUsdIdr, state.settings.managerApprovalLimitIdr, state.suppliers]
   );
 
   const deletePurchaseOrder = useCallback(
@@ -1970,14 +1853,14 @@ export function useErpController() {
         ...prev,
         purchaseOrders: prev.purchaseOrders.filter((p) => p.id !== poId),
       }));
-      if (authMode === 'firebase') {
-        await deletePurchaseOrdersWithLogs([poId]);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deletePurchaseOrdersWithLogs([poId], activeCompanyId);
       }
-      await ensureSeedLockedInFirebase();
+      await ensureSeedLocked();
       await recordAudit('Procurement', `Hapus ${target.poNumber}`, poId, target.poNumber, target.supplierName);
       toast.success(`Purchase Order ${target.poNumber} dihapus.`);
     },
-    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state.purchaseOrders]
+    [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state.purchaseOrders]
   );
 
   const clearDummyPurchaseOrders = useCallback(async () => {
@@ -1995,10 +1878,10 @@ export function useErpController() {
       ...prev,
       purchaseOrders: prev.purchaseOrders.filter((p) => !poSet.has(p.id)),
     }));
-    if (authMode === 'firebase') {
-      await deletePurchaseOrdersWithLogs(targets.poIds);
+    if (authMode === 'supabase' && activeCompanyId) {
+      await deletePurchaseOrdersWithLogs(targets.poIds, activeCompanyId);
     }
-    await ensureSeedLockedInFirebase();
+    await ensureSeedLocked();
     await recordAudit(
       'Procurement',
       'Hapus Semua PO Dummy',
@@ -2006,7 +1889,7 @@ export function useErpController() {
       `${targets.poIds.length} PO dummy`
     );
     toast.success(`${targets.poIds.length} Purchase Order dummy berhasil dihapus.`);
-  }, [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state]);
+  }, [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state]);
 
   // =========================================================================
   // Inventory & Goods Receipt (from PO) -> Auto AP Invoice
@@ -2218,20 +2101,20 @@ export function useErpController() {
         journalEntries: autoJournal ? [autoJournal, ...prev.journalEntries] : prev.journalEntries,
       }));
 
-      if (authMode === 'firebase') {
+      if (authMode === 'supabase' && activeCompanyId) {
         for (const [pid, stocks] of Object.entries(updatedProductsMap)) {
-          await saveFirestoreDoc('products', pid, { warehouseStocks: stocks }, false);
+          await saveSupabaseRecord('products', pid, { warehouseStocks: stocks }, false, activeCompanyId);
         }
         for (const mov of newMovements) {
-          await createImmutableRecord('stockMovements', mov.id, { ...mov });
+          await createImmutableRecord('stockMovements', mov.id, { ...mov }, activeCompanyId);
         }
-        await saveFirestoreDoc('purchaseOrders', po.id, { items: updatedItems, status: nextStatus }, false);
-        await appendPoLog(po.id, logEntry);
+        await saveSupabaseRecord('purchaseOrders', po.id, { items: updatedItems, status: nextStatus }, false, activeCompanyId);
+        await appendPoLog(po.id, logEntry, activeCompanyId);
         const invPayload = { ...newApInvoice };
         delete invPayload.payments;
-        await saveFirestoreDoc('invoices', newApInvoice.id, invPayload, true);
+        await saveSupabaseRecord('invoices', newApInvoice.id, invPayload, true, activeCompanyId);
         if (autoJournal) {
-          await saveFirestoreDoc('journalEntries', autoJournal.id, { ...autoJournal }, true);
+          await saveSupabaseRecord('journalEntries', autoJournal.id, { ...autoJournal }, true, activeCompanyId);
         }
       }
 
@@ -2248,7 +2131,7 @@ export function useErpController() {
           : `Penerimaan Service/Non-Stok berhasil! AP (${newApInvoice.invoiceNumber}) & Beban Operasional tercatat.`
       );
     },
-    [authMode, buildResolvedJournalEntry, currentUser, recordAudit, state.periodClosings, state.products, state.purchaseOrders, state.settings, state.suppliers]
+    [activeCompanyId, authMode, buildResolvedJournalEntry, currentUser, recordAudit, state.periodClosings, state.products, state.purchaseOrders, state.settings, state.suppliers]
   );
 
   const issueGoods = useCallback(
@@ -2304,14 +2187,14 @@ export function useErpController() {
         products: prev.products.map((p) => (p.id === prod.id ? { ...p, warehouseStocks: updatedStocks, updatedAt: now } : p)),
         stockMovements: [mov, ...prev.stockMovements],
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('products', prod.id, { warehouseStocks: updatedStocks }, false);
-        await createImmutableRecord('stockMovements', mov.id, { ...mov });
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('products', prod.id, { warehouseStocks: updatedStocks }, false, activeCompanyId);
+        await createImmutableRecord('stockMovements', mov.id, { ...mov }, activeCompanyId);
       }
       await recordAudit('Inventory', `Goods Issue ${prod.sku}`, prod.id, prod.sku, `-${qty} ${prod.uomCode} dari ${wh.code}`);
       toast.success(`Goods Issue ${qty} ${prod.uomCode} ${prod.sku} berhasil.`);
     },
-    [authMode, currentUser, recordAudit, state.products, state.warehouses]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.products, state.warehouses]
   );
 
   const transferStock = useCallback(
@@ -2380,14 +2263,14 @@ export function useErpController() {
         stockMovements: [mov, ...prev.stockMovements],
       }));
 
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('products', prod.id, { warehouseStocks: updatedStocks }, false);
-        await createImmutableRecord('stockMovements', mov.id, { ...mov });
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('products', prod.id, { warehouseStocks: updatedStocks }, false, activeCompanyId);
+        await createImmutableRecord('stockMovements', mov.id, { ...mov }, activeCompanyId);
       }
       await recordAudit('Inventory', `Transfer ${prod.sku}`, prod.id, prod.sku, `${qty} ${prod.uomCode}: ${fromWh.code} -> ${toWh.code}`);
       toast.success(`Transfer ${qty} ${prod.uomCode} dari ${fromWh.code} ke ${toWh.code} berhasil.`);
     },
-    [authMode, currentUser, recordAudit, state.products, state.warehouses]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.products, state.warehouses]
   );
 
   const recordStockOpname = useCallback(
@@ -2439,14 +2322,14 @@ export function useErpController() {
         products: prev.products.map((p) => (p.id === prod.id ? { ...p, warehouseStocks: updatedStocks, updatedAt: now } : p)),
         stockMovements: [mov, ...prev.stockMovements],
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('products', prod.id, { warehouseStocks: updatedStocks }, false);
-        await createImmutableRecord('stockMovements', mov.id, { ...mov });
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('products', prod.id, { warehouseStocks: updatedStocks }, false, activeCompanyId);
+        await createImmutableRecord('stockMovements', mov.id, { ...mov }, activeCompanyId);
       }
       await recordAudit('Inventory', `Stock Opname ${prod.sku}`, prod.id, prod.sku, `${wh.code}: ${beforeQty} -> ${afterQty}`);
       toast.success(`Stock Opname ${prod.sku} di ${wh.code} diperbarui.`);
     },
-    [authMode, currentUser, recordAudit, state.products, state.warehouses]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.products, state.warehouses]
   );
 
   // =========================================================================
@@ -2608,14 +2491,14 @@ export function useErpController() {
       };
 
       setState((prev) => ({ ...prev, salesOrders: [newSo, ...prev.salesOrders] }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('salesOrders', soId, { ...newSo }, true);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('salesOrders', soId, { ...newSo }, true, activeCompanyId);
       }
       await recordAudit('Sales', `Buat ${soNumber}`, soId, soNumber, `Customer: ${customer.name}`);
       toast.success(`${soNumber} berhasil dibuat (${status}).`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.customers, state.invoices, state.products, state.salesOrders, state.settings, state.warehouses]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.customers, state.invoices, state.products, state.salesOrders, state.settings, state.warehouses]
   );
 
   const transitionSalesOrder = useCallback(
@@ -2816,21 +2699,21 @@ export function useErpController() {
         journalEntries: autoJournals.length > 0 ? [...autoJournals, ...prev.journalEntries] : prev.journalEntries,
       }));
 
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('salesOrders', soId, { status: nextStatus, invoiceNumber }, false);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('salesOrders', soId, { status: nextStatus, invoiceNumber }, false, activeCompanyId);
         if (createdInvoice) {
           const invPayload = { ...createdInvoice };
           delete invPayload.payments;
-          await saveFirestoreDoc('invoices', createdInvoice.id, invPayload, true);
+          await saveSupabaseRecord('invoices', createdInvoice.id, invPayload, true, activeCompanyId);
         }
         for (const jrn of autoJournals) {
-          await saveFirestoreDoc('journalEntries', jrn.id, { ...jrn }, true);
+          await saveSupabaseRecord('journalEntries', jrn.id, { ...jrn }, true, activeCompanyId);
         }
       }
       await recordAudit('Sales', `${so.soNumber} -> ${nextStatus}`, so.id, so.soNumber);
       toast.success(`${so.soNumber} diperbarui ke ${nextStatus}.`);
     },
-    [authMode, buildResolvedJournalEntry, currentUser, recordAudit, state.customers, state.invoices, state.periodClosings, state.products, state.salesOrders, state.settings.defaultExchangeRateUsdIdr]
+    [activeCompanyId, authMode, buildResolvedJournalEntry, currentUser, recordAudit, state.customers, state.invoices, state.periodClosings, state.products, state.salesOrders, state.settings.defaultExchangeRateUsdIdr]
   );
 
   const deliverSalesOrder = useCallback(
@@ -2859,7 +2742,8 @@ export function useErpController() {
         try {
           const uploaded = await uploadPodDocument(
             pod.file,
-            authMode === 'firebase' ? 'firebase' : 'preview'
+            authMode === 'supabase' ? 'supabase' : 'preview',
+            activeCompanyId
           );
           podImageUrl = uploaded.url;
           podFileName = uploaded.fileName;
@@ -2952,19 +2836,19 @@ export function useErpController() {
         stockMovements: [...newMovements, ...prev.stockMovements],
       }));
 
-      if (authMode === 'firebase') {
+      if (authMode === 'supabase' && activeCompanyId) {
         for (const [pid, stocks] of Object.entries(updatedStocksMap)) {
-          await saveFirestoreDoc('products', pid, { warehouseStocks: stocks }, false);
+          await saveSupabaseRecord('products', pid, { warehouseStocks: stocks }, false, activeCompanyId);
         }
         for (const mov of newMovements) {
-          await createImmutableRecord('stockMovements', mov.id, { ...mov });
+          await createImmutableRecord('stockMovements', mov.id, { ...mov }, activeCompanyId);
         }
-        await saveFirestoreDoc('salesOrders', so.id, { items: updatedItems, status: nextStatus, ...podPatch }, false);
+        await saveSupabaseRecord('salesOrders', so.id, { items: updatedItems, status: nextStatus, ...podPatch }, false, activeCompanyId);
       }
       await recordAudit('Sales', `Pengiriman ${so.soNumber}`, so.id, so.soNumber, `Status: ${nextStatus}${podReceiverName ? `; Penerima e-POD: ${podReceiverName}` : ''}`);
       toast.success(`Pengiriman ${so.soNumber} tercatat (${nextStatus}).`);
     },
-    [authMode, currentUser, recordAudit, state.products, state.salesOrders]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.products, state.salesOrders]
   );
 
   const deleteSalesOrder = useCallback(
@@ -2979,14 +2863,14 @@ export function useErpController() {
         ...prev,
         salesOrders: prev.salesOrders.filter((s) => s.id !== soId),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('salesOrders', soId);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('salesOrders', soId, activeCompanyId);
       }
-      await ensureSeedLockedInFirebase();
+      await ensureSeedLocked();
       await recordAudit('Sales', `Hapus ${target.soNumber}`, soId, target.soNumber, target.customerName);
       toast.success(`Sales Order ${target.soNumber} dihapus.`);
     },
-    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state.salesOrders]
+    [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state.salesOrders]
   );
 
   const clearDummySalesOrders = useCallback(async () => {
@@ -3004,13 +2888,13 @@ export function useErpController() {
       ...prev,
       salesOrders: prev.salesOrders.filter((s) => !soSet.has(s.id)),
     }));
-    if (authMode === 'firebase') {
-      await deleteFirestoreDocsInChunks(
-        targets.soIds.map((id) => ({ col: 'salesOrders', id })),
-        10
+    if (authMode === 'supabase' && activeCompanyId) {
+      await deleteSupabaseMixedEntries(
+        targets.soIds.map((id) => ({ col: 'salesOrders' as const, id })),
+        activeCompanyId
       );
     }
-    await ensureSeedLockedInFirebase();
+    await ensureSeedLocked();
     await recordAudit(
       'Sales',
       'Hapus Semua SO Dummy',
@@ -3018,7 +2902,7 @@ export function useErpController() {
       `${targets.soIds.length} SO dummy`
     );
     toast.success(`${targets.soIds.length} Sales Order dummy berhasil dihapus.`);
-  }, [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state]);
+  }, [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state]);
 
   // =========================================================================
   // Accounting & General Ledger (Buku Besar) Actions
@@ -3170,16 +3054,17 @@ export function useErpController() {
         journalEntries: paymentJournal ? [paymentJournal, ...prev.journalEntries] : prev.journalEntries,
       }));
 
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc(
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord(
           'invoices',
           invoiceId,
           { paidAmount: newPaid, balanceDue, status },
-          false
+          false,
+          activeCompanyId
         );
-        await appendInvoicePayment(invoiceId, payment);
+        await appendInvoicePayment(invoiceId, payment, activeCompanyId);
         if (paymentJournal) {
-          await saveFirestoreDoc('journalEntries', paymentJournal.id, { ...paymentJournal }, true);
+          await saveSupabaseRecord('journalEntries', paymentJournal.id, { ...paymentJournal }, true, activeCompanyId);
         }
       }
       await recordAudit(
@@ -3194,6 +3079,7 @@ export function useErpController() {
       );
     },
     [
+      activeCompanyId,
       authMode,
       buildResolvedJournalEntry,
       currentUser,
@@ -3262,8 +3148,8 @@ export function useErpController() {
           : prev.chartOfAccounts.map((a) => (a.id === targetId ? { ...a, ...account, createdAt: a.createdAt } : a)),
       }));
 
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('chartOfAccounts', targetId, { ...account }, input.isNew);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('chartOfAccounts', targetId, { ...account }, input.isNew, activeCompanyId);
       }
 
       await recordAudit(
@@ -3275,7 +3161,7 @@ export function useErpController() {
       toast.success(`Akun ${account.code} — ${account.name} tersimpan.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.chartOfAccounts]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.chartOfAccounts]
   );
 
   const createJournalEntry = useCallback(
@@ -3354,8 +3240,8 @@ export function useErpController() {
       }));
 
       try {
-        if (authMode === 'firebase') {
-          await saveFirestoreDoc('journalEntries', jrnId, { ...entry }, true);
+        if (authMode === 'supabase' && activeCompanyId) {
+          await saveSupabaseRecord('journalEntries', jrnId, { ...entry }, true, activeCompanyId);
         }
 
         await recordAudit('Accounting', `Buat Jurnal ${entryNumber}`, jrnId, entryNumber, cleanDesc);
@@ -3371,7 +3257,7 @@ export function useErpController() {
         return false;
       }
     },
-    [authMode, currentUser, recordAudit, state.chartOfAccounts, state.journalEntries.length, state.periodClosings]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.chartOfAccounts, state.journalEntries.length, state.periodClosings]
   );
 
   const voidJournalEntry = useCallback(
@@ -3397,14 +3283,14 @@ export function useErpController() {
         ),
       }));
 
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('journalEntries', entryId, { status: 'Void' }, false);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('journalEntries', entryId, { status: 'Void' }, false, activeCompanyId);
       }
 
       await recordAudit('Accounting', `Void Jurnal ${target.entryNumber}`, entryId, target.entryNumber, target.description);
       toast.success(`Jurnal ${target.entryNumber} dibatalkan (Void). Saldo Buku Besar diperbarui.`);
     },
-    [authMode, currentUser, recordAudit, state.journalEntries, state.periodClosings]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.journalEntries, state.periodClosings]
   );
 
   const deleteJournalEntry = useCallback(
@@ -3421,15 +3307,15 @@ export function useErpController() {
         journalEntries: prev.journalEntries.filter((j) => j.id !== entryId),
       }));
 
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('journalEntries', entryId);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('journalEntries', entryId, activeCompanyId);
       }
 
-      await ensureSeedLockedInFirebase();
+      await ensureSeedLocked();
       await recordAudit('Accounting', `Hapus Jurnal ${target.entryNumber}`, entryId, target.entryNumber);
       toast.success(`Jurnal ${target.entryNumber} dihapus permanen.`);
     },
-    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state.journalEntries]
+    [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state.journalEntries]
   );
 
   const clearDummyJournalEntries = useCallback(async () => {
@@ -3447,16 +3333,16 @@ export function useErpController() {
       ...prev,
       journalEntries: prev.journalEntries.filter((j) => !idSet.has(j.id)),
     }));
-    if (authMode === 'firebase') {
-      await deleteFirestoreDocsInChunks(
-        targetIds.map((id) => ({ col: 'journalEntries', id })),
-        10
+    if (authMode === 'supabase' && activeCompanyId) {
+      await deleteSupabaseMixedEntries(
+        targetIds.map((id) => ({ col: 'journalEntries' as const, id })),
+        activeCompanyId
       );
     }
-    await ensureSeedLockedInFirebase();
+    await ensureSeedLocked();
     await recordAudit('Accounting', 'Hapus Semua Jurnal Dummy', 'seed_cleanup_jrn', `${targetIds.length} jurnal`);
     toast.success(`${targetIds.length} jurnal dummy berhasil dihapus.`);
-  }, [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state]);
+  }, [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state]);
 
   // =========================================================================
   // System Settings & Notifications
@@ -3489,11 +3375,12 @@ export function useErpController() {
       }
 
       const prevSettings = state.settings;
+      const targetCompanyId = activeCompanyId || state.settings.id || 'company';
       const now = new Date().toISOString();
       const updated: CompanySettings = {
         ...state.settings,
         ...input,
-        id: 'company',
+        id: targetCompanyId,
         companyName,
         tagline: sanitizeString(input.tagline ?? state.settings.tagline, 200),
         npwp: sanitizeString(input.npwp ?? state.settings.npwp, 40),
@@ -3524,10 +3411,10 @@ export function useErpController() {
       };
       setState((prev) => ({ ...prev, settings: updated }));
       try {
-        if (authMode === 'firebase') {
-          await saveFirestoreDoc('settings', 'company', { ...updated }, false);
+        if (authMode === 'supabase' && activeCompanyId) {
+          await saveSupabaseRecord('settings', activeCompanyId, { ...updated }, false, activeCompanyId);
         }
-        await recordAudit('System', 'Update Pengaturan Perusahaan', 'company', updated.companyName);
+        await recordAudit('System', 'Update Pengaturan Perusahaan', targetCompanyId, updated.companyName);
         toast.success('Pengaturan perusahaan diperbarui.');
       } catch (err) {
         setState((prev) => ({ ...prev, settings: prevSettings }));
@@ -3535,7 +3422,7 @@ export function useErpController() {
         toast.error(msg);
       }
     },
-    [authMode, currentUser, recordAudit, state.settings]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.settings]
   );
 
   const markNotificationRead = useCallback(
@@ -3548,11 +3435,11 @@ export function useErpController() {
         ...prev,
         notifications: prev.notifications.map((n) => (n.id === notifId ? { ...n, readBy } : n)),
       }));
-      if (authMode === 'firebase') {
-        await markNotificationReadInFirestore(notifId, readBy);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await markNotificationReadInSupabase(notifId, readBy, activeCompanyId);
       }
     },
-    [authMode, currentUser, state.notifications]
+    [activeCompanyId, authMode, currentUser, state.notifications]
   );
 
   // =========================================================================
@@ -3583,8 +3470,8 @@ export function useErpController() {
           c.id === customerId ? { ...c, contractPrices: cleanTiers, updatedAt: now } : c
         ),
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('customers', customerId, { contractPrices: cleanTiers }, false);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('customers', customerId, { contractPrices: cleanTiers }, false, activeCompanyId);
       }
       await recordAudit(
         'Sales',
@@ -3596,7 +3483,7 @@ export function useErpController() {
       toast.success(`Harga kontrak untuk ${target.name} tersimpan (${cleanTiers.length} item).`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.customers]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.customers]
   );
 
   const saveSalesQuotation = useCallback(
@@ -3756,8 +3643,8 @@ export function useErpController() {
           ? [quotation, ...prev.salesQuotations]
           : prev.salesQuotations.map((q) => (q.id === qtId ? { ...q, ...quotation } : q)),
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('salesQuotations', qtId, { ...quotation }, input.isNew);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('salesQuotations', qtId, { ...quotation }, input.isNew, activeCompanyId);
       }
       await recordAudit(
         'Sales',
@@ -3769,7 +3656,7 @@ export function useErpController() {
       toast.success(`${quotationNumber} berhasil disimpan (${status}).`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.customers, state.products, state.salesQuotations, state.settings, state.warehouses]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.customers, state.products, state.salesQuotations, state.settings, state.warehouses]
   );
 
   const updateQuotationStatus = useCallback(
@@ -3787,14 +3674,14 @@ export function useErpController() {
           q.id === qtId ? { ...q, status, updatedAt: now } : q
         ),
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('salesQuotations', qtId, { status }, false);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('salesQuotations', qtId, { status }, false, activeCompanyId);
       }
       await recordAudit('Sales', `${qt.quotationNumber} -> ${status}`, qtId, qt.quotationNumber);
       toast.success(`${qt.quotationNumber} diperbarui ke ${status}.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.salesQuotations]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.salesQuotations]
   );
 
   const convertQuotationToSo = useCallback(
@@ -3895,13 +3782,14 @@ export function useErpController() {
         ),
       }));
 
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('salesOrders', soId, { ...newSo }, true);
-        await saveFirestoreDoc(
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('salesOrders', soId, { ...newSo }, true, activeCompanyId);
+        await saveSupabaseRecord(
           'salesQuotations',
           qt.id,
           { status: 'Converted', convertedSoId: soId, convertedSoNumber: soNumber },
-          false
+          false,
+          activeCompanyId
         );
       }
       await recordAudit(
@@ -3914,7 +3802,7 @@ export function useErpController() {
       toast.success(`${qt.quotationNumber} berhasil dikonversi menjadi ${soNumber} (Draft).`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.customers, state.invoices, state.salesOrders, state.salesQuotations, state.settings.defaultExchangeRateUsdIdr, state.warehouses]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.customers, state.invoices, state.salesOrders, state.salesQuotations, state.settings.defaultExchangeRateUsdIdr, state.warehouses]
   );
 
   const saveVendorRfq = useCallback(
@@ -4000,14 +3888,15 @@ export function useErpController() {
           ? [rfq, ...prev.vendorRfqs]
           : prev.vendorRfqs.map((r) => (r.id === rfqId ? { ...r, ...rfq } : r)),
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('vendorRfqs', rfqId, { ...rfq }, input.isNew);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('vendorRfqs', rfqId, { ...rfq }, input.isNew, activeCompanyId);
       }
       await recordAudit('Procurement', `Simpan ${rfqNumber}`, rfqId, rfqNumber, cleanTitle);
       toast.success(`${rfqNumber} tersimpan (${rfq.status}).`);
       return true;
     },
     [
+      activeCompanyId,
       authMode,
       currentUser,
       recordAudit,
@@ -4057,12 +3946,13 @@ export function useErpController() {
             : r
         ),
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc(
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord(
           'vendorRfqs',
           rfqId,
           { invitedSupplierIds: invited, quotes: updatedQuotes, status: nextStatus },
-          false
+          false,
+          activeCompanyId
         );
       }
       await recordAudit(
@@ -4074,7 +3964,7 @@ export function useErpController() {
       toast.success(`Penawaran dari ${supplier.name} tercatat di ${rfq.rfqNumber}.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.suppliers, state.vendorRfqs]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.suppliers, state.vendorRfqs]
   );
 
   const awardRfqToPo = useCallback(
@@ -4198,12 +4088,12 @@ export function useErpController() {
         ),
       }));
 
-      if (authMode === 'firebase') {
+      if (authMode === 'supabase' && activeCompanyId) {
         const poDoc = { ...newPo };
         delete poDoc.logs;
-        await saveFirestoreDoc('purchaseOrders', poId, poDoc, true);
-        await appendPoLog(poId, initialLog);
-        await saveFirestoreDoc(
+        await saveSupabaseRecord('purchaseOrders', poId, poDoc, true, activeCompanyId);
+        await appendPoLog(poId, initialLog, activeCompanyId);
+        await saveSupabaseRecord(
           'vendorRfqs',
           rfqId,
           {
@@ -4212,7 +4102,8 @@ export function useErpController() {
             awardedPoId: poId,
             awardedPoNumber: poNumber,
           },
-          false
+          false,
+          activeCompanyId
         );
       }
       await recordAudit(
@@ -4225,7 +4116,7 @@ export function useErpController() {
       toast.success(`${rfq.rfqNumber} dimenangkan oleh ${supplier.name}. ${poNumber} (Draft) telah dibuat.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.purchaseOrders, state.settings, state.suppliers, state.vendorRfqs, state.warehouses]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.purchaseOrders, state.settings, state.suppliers, state.vendorRfqs, state.warehouses]
   );
 
   const saveGoodsReturn = useCallback(
@@ -4338,8 +4229,8 @@ export function useErpController() {
         ...prev,
         goodsReturns: [goodsReturn, ...prev.goodsReturns],
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('goodsReturns', retId, { ...goodsReturn }, true);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('goodsReturns', retId, { ...goodsReturn }, true, activeCompanyId);
       }
       await recordAudit(
         input.returnType === 'PURCHASE_RETURN' ? 'Procurement' : 'Sales',
@@ -4351,7 +4242,7 @@ export function useErpController() {
       toast.success(`Dokumen Retur ${returnNumber} tersimpan (Pending Approval Finance/Manager).`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.goodsReturns.length, state.products, state.purchaseOrders, state.salesOrders, state.settings]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.goodsReturns.length, state.products, state.purchaseOrders, state.salesOrders, state.settings]
   );
 
   const completeGoodsReturn = useCallback(
@@ -4591,15 +4482,15 @@ export function useErpController() {
         ),
       }));
 
-      if (authMode === 'firebase') {
+      if (authMode === 'supabase' && activeCompanyId) {
         for (const [pid, stocks] of Object.entries(updatedStocksMap)) {
-          await saveFirestoreDoc('products', pid, { warehouseStocks: stocks }, false);
+          await saveSupabaseRecord('products', pid, { warehouseStocks: stocks }, false, activeCompanyId);
         }
         for (const mov of newMovements) {
-          await createImmutableRecord('stockMovements', mov.id, { ...mov });
+          await createImmutableRecord('stockMovements', mov.id, { ...mov }, activeCompanyId);
         }
         if (updatedInv) {
-          await saveFirestoreDoc(
+          await saveSupabaseRecord(
             'invoices',
             updatedInv.id,
             {
@@ -4607,17 +4498,19 @@ export function useErpController() {
               balanceDue: updatedInv.balanceDue,
               status: updatedInv.status,
             },
-            false
+            false,
+            activeCompanyId
           );
         }
         for (const jrn of reversalJournals) {
-          await saveFirestoreDoc('journalEntries', jrn.id, { ...jrn }, true);
+          await saveSupabaseRecord('journalEntries', jrn.id, { ...jrn }, true, activeCompanyId);
         }
-        await saveFirestoreDoc(
+        await saveSupabaseRecord(
           'goodsReturns',
           returnId,
           { status: 'Completed', completedBy: currentUser.uid },
-          false
+          false,
+          activeCompanyId
         );
       }
 
@@ -4631,7 +4524,7 @@ export function useErpController() {
       toast.success(`Retur ${ret.returnNumber} selesai! Stok, Invoice & Jurnal Buku Besar telah disesuaikan.`);
       return true;
     },
-    [authMode, buildResolvedJournalEntry, currentUser, recordAudit, state.goodsReturns, state.invoices, state.periodClosings, state.products, state.settings.defaultExchangeRateUsdIdr]
+    [activeCompanyId, authMode, buildResolvedJournalEntry, currentUser, recordAudit, state.goodsReturns, state.invoices, state.periodClosings, state.products, state.settings.defaultExchangeRateUsdIdr]
   );
 
   const cancelGoodsReturn = useCallback(
@@ -4649,14 +4542,14 @@ export function useErpController() {
           r.id === returnId ? { ...r, status: 'Cancelled', updatedAt: now } : r
         ),
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('goodsReturns', returnId, { status: 'Cancelled' }, false);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('goodsReturns', returnId, { status: 'Cancelled' }, false, activeCompanyId);
       }
       await recordAudit('Inventory', `Batalkan Retur ${ret.returnNumber}`, returnId, ret.returnNumber);
       toast.info(`Retur ${ret.returnNumber} dibatalkan.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.goodsReturns]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.goodsReturns]
   );
 
   const saveInventoryBatch = useCallback(
@@ -4711,14 +4604,14 @@ export function useErpController() {
           ? [batch, ...prev.inventoryBatches]
           : prev.inventoryBatches.map((b) => (b.id === batId ? { ...b, ...batch } : b)),
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('inventoryBatches', batId, { ...batch }, input.isNew);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('inventoryBatches', batId, { ...batch }, input.isNew, activeCompanyId);
       }
       await recordAudit('Inventory', `Simpan Batch ${cleanBatch}`, batId, prod.sku);
       toast.success(`Batch ${cleanBatch} (${prod.sku}) tersimpan.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.inventoryBatches, state.products, state.warehouses]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.inventoryBatches, state.products, state.warehouses]
   );
 
   const deleteInventoryBatch = useCallback(
@@ -4733,13 +4626,13 @@ export function useErpController() {
         ...prev,
         inventoryBatches: prev.inventoryBatches.filter((b) => b.id !== batchId),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('inventoryBatches', batchId);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('inventoryBatches', batchId, activeCompanyId);
       }
       await recordAudit('Inventory', `Hapus Batch ${target.batchNumber}`, batchId, target.batchNumber);
       toast.success(`Batch ${target.batchNumber} dihapus.`);
     },
-    [authMode, currentUser, recordAudit, state.inventoryBatches]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.inventoryBatches]
   );
 
   const togglePeriodClosing = useCallback(
@@ -4753,7 +4646,8 @@ export function useErpController() {
         return false;
       }
       const now = new Date().toISOString();
-      const docId = `per_${periodKey.replace('-', '_')}`;
+      const existing = state.periodClosings.find((p) => p.periodKey === periodKey);
+      const docId = existing?.id || makeId('per');
       const record: AccountingPeriodLock = {
         id: docId,
         periodKey,
@@ -4775,8 +4669,8 @@ export function useErpController() {
             : [record, ...prev.periodClosings],
         };
       });
-      if (authMode === 'firebase') {
-        await upsertFirestoreDocNoCreatedAt('periodClosings', docId, { ...record });
+      if (authMode === 'supabase' && activeCompanyId) {
+        await upsertPeriodOrBudget('periodClosings', docId, { ...record }, activeCompanyId);
       }
       await recordAudit(
         'Accounting',
@@ -4792,7 +4686,7 @@ export function useErpController() {
       );
       return true;
     },
-    [authMode, currentUser, recordAudit]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.periodClosings]
   );
 
   const saveBudget = useCallback(
@@ -4812,7 +4706,8 @@ export function useErpController() {
         return false;
       }
       const now = new Date().toISOString();
-      const docId = `bdg_${input.periodKey.replace('-', '_')}`;
+      const existing = state.budgets.find((b) => b.periodKey === input.periodKey);
+      const docId = existing?.id || makeId('bdg');
       const budget: MonthlyBudget = {
         id: docId,
         periodKey: input.periodKey,
@@ -4834,14 +4729,14 @@ export function useErpController() {
             : [budget, ...prev.budgets],
         };
       });
-      if (authMode === 'firebase') {
-        await upsertFirestoreDocNoCreatedAt('budgets', docId, { ...budget });
+      if (authMode === 'supabase' && activeCompanyId) {
+        await upsertPeriodOrBudget('budgets', docId, { ...budget }, activeCompanyId);
       }
       await recordAudit('Accounting', `Simpan Budget ${input.periodKey}`, docId, input.periodKey);
       toast.success(`Target & Budget periode ${input.periodKey} tersimpan.`);
       return true;
     },
-    [authMode, currentUser, recordAudit]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.budgets]
   );
 
   const updateInvoiceTaxNumber = useCallback(
@@ -4869,10 +4764,10 @@ export function useErpController() {
             )
           : prev.salesOrders,
       }));
-      if (authMode === 'firebase') {
-        await saveFirestoreDoc('invoices', invoiceId, { taxInvoiceNumber: cleanTaxNo }, false);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await saveSupabaseRecord('invoices', invoiceId, { taxInvoiceNumber: cleanTaxNo }, false, activeCompanyId);
         if (linkedSo) {
-          await saveFirestoreDoc('salesOrders', linkedSo.id, { taxInvoiceNumber: cleanTaxNo }, false);
+          await saveSupabaseRecord('salesOrders', linkedSo.id, { taxInvoiceNumber: cleanTaxNo }, false, activeCompanyId);
         }
       }
       await recordAudit(
@@ -4884,7 +4779,7 @@ export function useErpController() {
       toast.success(`Nomor Faktur Pajak ${inv.invoiceNumber} diperbarui.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.invoices, state.salesOrders]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.invoices, state.salesOrders]
   );
 
   const deleteGoodsReturn = useCallback(
@@ -4899,8 +4794,8 @@ export function useErpController() {
         ...prev,
         goodsReturns: prev.goodsReturns.filter((r) => r.id !== returnId),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('goodsReturns', returnId);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('goodsReturns', returnId, activeCompanyId);
       }
       await recordAudit(
         target.returnType === 'PURCHASE_RETURN' ? 'Purchase Order' : 'Sales Order',
@@ -4911,7 +4806,7 @@ export function useErpController() {
       toast.success(`Riwayat retur ${target.returnNumber} dihapus permanen.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.goodsReturns]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.goodsReturns]
   );
 
   const deleteVendorRfq = useCallback(
@@ -4926,14 +4821,14 @@ export function useErpController() {
         ...prev,
         vendorRfqs: prev.vendorRfqs.filter((r) => r.id !== rfqId),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('vendorRfqs', rfqId);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('vendorRfqs', rfqId, activeCompanyId);
       }
       await recordAudit('Purchase Order', `Hapus RFQ ${target.rfqNumber}`, rfqId, target.rfqNumber);
       toast.success(`RFQ ${target.rfqNumber} dihapus permanen.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.vendorRfqs]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.vendorRfqs]
   );
 
   const deleteSalesQuotation = useCallback(
@@ -4948,8 +4843,8 @@ export function useErpController() {
         ...prev,
         salesQuotations: prev.salesQuotations.filter((q) => q.id !== quotationId),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('salesQuotations', quotationId);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('salesQuotations', quotationId, activeCompanyId);
       }
       await recordAudit(
         'Sales Order',
@@ -4960,7 +4855,7 @@ export function useErpController() {
       toast.success(`Quotation ${target.quotationNumber} dihapus permanen.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.salesQuotations]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.salesQuotations]
   );
 
   const deleteStockMovement = useCallback(
@@ -4975,8 +4870,8 @@ export function useErpController() {
         ...prev,
         stockMovements: prev.stockMovements.filter((m) => m.id !== movementId),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('stockMovements', movementId);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('stockMovements', movementId, activeCompanyId);
       }
       await recordAudit(
         'Inventory',
@@ -4987,7 +4882,7 @@ export function useErpController() {
       toast.success(`Riwayat mutasi stok (${target.productName}) dihapus permanen.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.stockMovements]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.stockMovements]
   );
 
   const deleteChartAccount = useCallback(
@@ -5002,14 +4897,14 @@ export function useErpController() {
         ...prev,
         chartOfAccounts: prev.chartOfAccounts.filter((a) => a.id !== accountId),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('chartOfAccounts', accountId);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('chartOfAccounts', accountId, activeCompanyId);
       }
       await recordAudit('Accounting', `Hapus Akun CoA ${target.code}`, accountId, target.name);
       toast.success(`Akun ${target.code} — ${target.name} dihapus permanen.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.chartOfAccounts]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.chartOfAccounts]
   );
 
   const deleteInvoice = useCallback(
@@ -5024,8 +4919,8 @@ export function useErpController() {
         ...prev,
         invoices: prev.invoices.filter((i) => i.id !== invoiceId),
       }));
-      if (authMode === 'firebase') {
-        await deleteInvoicesWithPayments([invoiceId]);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteInvoicesWithPayments([invoiceId], activeCompanyId);
       }
       await recordAudit(
         'Accounting',
@@ -5036,7 +4931,7 @@ export function useErpController() {
       toast.success(`Invoice ${target.invoiceNumber} dihapus permanen.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.invoices]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.invoices]
   );
 
   const deletePeriodClosing = useCallback(
@@ -5051,8 +4946,8 @@ export function useErpController() {
         ...prev,
         periodClosings: prev.periodClosings.filter((p) => p.id !== periodId),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('periodClosings', periodId);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('periodClosings', periodId, activeCompanyId);
       }
       await recordAudit(
         'Accounting',
@@ -5063,7 +4958,7 @@ export function useErpController() {
       toast.success(`Record closing periode ${target.periodKey} dihapus.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.periodClosings]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.periodClosings]
   );
 
   const deleteBudget = useCallback(
@@ -5081,8 +4976,8 @@ export function useErpController() {
         ...prev,
         budgets: prev.budgets.filter((b) => b.id !== budgetId),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('budgets', budgetId);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('budgets', budgetId, activeCompanyId);
       }
       await recordAudit(
         'Accounting',
@@ -5093,7 +4988,7 @@ export function useErpController() {
       toast.success(`Target budget periode ${target.periodKey} dihapus.`);
       return true;
     },
-    [authMode, currentUser, recordAudit, state.budgets]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.budgets]
   );
 
   const deleteAuditLog = useCallback(
@@ -5106,13 +5001,13 @@ export function useErpController() {
         ...prev,
         auditLogs: prev.auditLogs.filter((l) => l.id !== logId),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('auditLogs', logId);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('auditLogs', logId, activeCompanyId);
       }
       toast.success('Entri Audit Trail dihapus permanen.');
       return true;
     },
-    [authMode, currentUser]
+    [activeCompanyId, authMode, currentUser]
   );
 
   const deleteNotification = useCallback(
@@ -5125,13 +5020,13 @@ export function useErpController() {
         ...prev,
         notifications: prev.notifications.filter((n) => n.id !== notifId),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDoc('notifications', notifId);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseRecord('notifications', notifId, activeCompanyId);
       }
       toast.success('Notifikasi sistem dihapus permanen.');
       return true;
     },
-    [authMode, currentUser]
+    [activeCompanyId, authMode, currentUser]
   );
 
   // =========================================================================
@@ -5140,7 +5035,7 @@ export function useErpController() {
   const bulkDeleteFlatCollection = useCallback(
     async <K extends keyof ErpState>(
       stateKey: K,
-      firestoreCol: string,
+      collectionKey: LogicalCollectionKey,
       ids: string[],
       auditModule: string,
       label: string
@@ -5160,18 +5055,18 @@ export function useErpController() {
           [stateKey]: (list as unknown as Array<{ id: string }>).filter((item) => !idSet.has(item.id)),
         };
       });
-      if (authMode === 'firebase') {
-        await deleteFirestoreDocsInChunks(
-          uniqueIds.map((id) => ({ col: firestoreCol, id })),
-          10
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseMixedEntries(
+          uniqueIds.map((id) => ({ col: collectionKey, id })),
+          activeCompanyId
         );
       }
-      await ensureSeedLockedInFirebase();
+      await ensureSeedLocked();
       await recordAudit(auditModule, `Hapus Massal ${label}`, 'bulk_delete', `${uniqueIds.length} ${label}`);
       toast.success(`${uniqueIds.length} ${label} dihapus permanen.`);
       return uniqueIds.length;
     },
-    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit]
+    [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit]
   );
 
   const bulkDeletePurchaseOrders = useCallback(
@@ -5189,15 +5084,15 @@ export function useErpController() {
         ...prev,
         purchaseOrders: prev.purchaseOrders.filter((p) => !idSet.has(p.id)),
       }));
-      if (authMode === 'firebase') {
-        await deletePurchaseOrdersWithLogs(uniqueIds);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deletePurchaseOrdersWithLogs(uniqueIds, activeCompanyId);
       }
-      await ensureSeedLockedInFirebase();
+      await ensureSeedLocked();
       await recordAudit('Procurement', 'Hapus Massal Purchase Order', 'bulk_po', `${uniqueIds.length} PO`);
       toast.success(`${uniqueIds.length} Purchase Order dihapus permanen.`);
       return uniqueIds.length;
     },
-    [authMode, currentUser, ensureSeedLockedInFirebase, recordAudit, state.purchaseOrders]
+    [activeCompanyId, authMode, currentUser, ensureSeedLocked, recordAudit, state.purchaseOrders]
   );
 
   const bulkApprovePurchaseOrders = useCallback(
@@ -5260,8 +5155,8 @@ export function useErpController() {
           updatedAt: now,
           logs: [...(po.logs || []), logEntry],
         });
-        if (authMode === 'firebase') {
-          await saveFirestoreDoc(
+        if (authMode === 'supabase' && activeCompanyId) {
+          await saveSupabaseRecord(
             'purchaseOrders',
             poId,
             {
@@ -5269,9 +5164,10 @@ export function useErpController() {
               approvedBy,
               ...(directorApprovedBy ? { directorApprovedBy } : {}),
             },
-            false
+            false,
+            activeCompanyId
           );
-          await appendPoLog(poId, logEntry);
+          await appendPoLog(poId, logEntry, activeCompanyId);
         }
         approvedCount += 1;
       }
@@ -5295,7 +5191,7 @@ export function useErpController() {
       }
       return approvedCount;
     },
-    [authMode, currentUser, recordAudit, state.purchaseOrders, state.settings.defaultExchangeRateUsdIdr, state.settings.managerApprovalLimitIdr, state.suppliers]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.purchaseOrders, state.settings.defaultExchangeRateUsdIdr, state.settings.managerApprovalLimitIdr, state.suppliers]
   );
 
   const bulkDeleteSalesOrders = useCallback(
@@ -5346,8 +5242,8 @@ export function useErpController() {
         const q = state.salesQuotations.find((x) => x.id === qId);
         if (!q || q.status === 'Converted' || q.status === status) continue;
         updatedIds.add(qId);
-        if (authMode === 'firebase') {
-          await saveFirestoreDoc('salesQuotations', qId, { status }, false);
+        if (authMode === 'supabase' && activeCompanyId) {
+          await saveSupabaseRecord('salesQuotations', qId, { status }, false, activeCompanyId);
         }
       }
       if (updatedIds.size === 0) {
@@ -5364,7 +5260,7 @@ export function useErpController() {
       toast.success(`${updatedIds.size} Quotation diperbarui ke ${status}.`);
       return updatedIds.size;
     },
-    [authMode, currentUser, recordAudit, state.salesQuotations]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.salesQuotations]
   );
 
   const bulkDeleteGoodsReturns = useCallback(
@@ -5406,8 +5302,8 @@ export function useErpController() {
         const ret = state.goodsReturns.find((r) => r.id === retId);
         if (!ret || ret.status !== 'Pending') continue;
         updated.add(retId);
-        if (authMode === 'firebase') {
-          await saveFirestoreDoc('goodsReturns', retId, { status: 'Cancelled' }, false);
+        if (authMode === 'supabase' && activeCompanyId) {
+          await saveSupabaseRecord('goodsReturns', retId, { status: 'Cancelled' }, false, activeCompanyId);
         }
       }
       if (updated.size === 0) {
@@ -5424,7 +5320,7 @@ export function useErpController() {
       toast.info(`${updated.size} retur dibatalkan.`);
       return updated.size;
     },
-    [authMode, currentUser, recordAudit, state.goodsReturns]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.goodsReturns]
   );
 
   const bulkDeleteVendorRfqs = useCallback(
@@ -5456,12 +5352,13 @@ export function useErpController() {
         const target = state.suppliers.find((s) => s.id === sId);
         if (!target) continue;
         updated.add(sId);
-        if (authMode === 'firebase') {
-          await saveFirestoreDoc(
+        if (authMode === 'supabase' && activeCompanyId) {
+          await saveSupabaseRecord(
             'suppliers',
             sId,
             { verificationStatus: status, verifiedBy: currentUser.uid, verifiedAt: now, active },
-            false
+            false,
+            activeCompanyId
           );
         }
       }
@@ -5478,7 +5375,7 @@ export function useErpController() {
       toast.success(`${updated.size} supplier diperbarui menjadi ${status}.`);
       return updated.size;
     },
-    [authMode, currentUser, recordAudit, state.suppliers]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.suppliers]
   );
 
   const bulkDeleteCustomers = useCallback(
@@ -5502,17 +5399,17 @@ export function useErpController() {
         ...prev,
         users: prev.users.filter((u) => !idSet.has(u.uid)),
       }));
-      if (authMode === 'firebase') {
-        await deleteFirestoreDocsInChunks(
-          deletable.map((id) => ({ col: 'users', id })),
-          10
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteSupabaseMixedEntries(
+          deletable.map((id) => ({ col: 'users' as const, id })),
+          activeCompanyId
         );
       }
       await recordAudit('System', 'Hapus Massal User', 'bulk_users', `${deletable.length} user`);
       toast.success(`${deletable.length} user dihapus.`);
       return deletable.length;
     },
-    [authMode, currentUser, recordAudit]
+    [activeCompanyId, authMode, currentUser, recordAudit]
   );
 
   const bulkDeleteStockMovements = useCallback(
@@ -5549,8 +5446,8 @@ export function useErpController() {
           continue;
         }
         updatedIds.add(entryId);
-        if (authMode === 'firebase') {
-          await saveFirestoreDoc('journalEntries', entryId, { status: 'Void' }, false);
+        if (authMode === 'supabase' && activeCompanyId) {
+          await saveSupabaseRecord('journalEntries', entryId, { status: 'Void' }, false, activeCompanyId);
         }
       }
 
@@ -5576,7 +5473,7 @@ export function useErpController() {
       }
       return updatedIds.size;
     },
-    [authMode, currentUser, recordAudit, state.journalEntries, state.periodClosings]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.journalEntries, state.periodClosings]
   );
 
   const bulkDeleteJournalEntries = useCallback(
@@ -5599,14 +5496,14 @@ export function useErpController() {
         ...prev,
         invoices: prev.invoices.filter((i) => !idSet.has(i.id)),
       }));
-      if (authMode === 'firebase') {
-        await deleteInvoicesWithPayments(uniqueIds);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await deleteInvoicesWithPayments(uniqueIds, activeCompanyId);
       }
       await recordAudit('Accounting', 'Hapus Massal Invoice AP/AR', 'bulk_inv', `${uniqueIds.length} invoice`);
       toast.success(`${uniqueIds.length} Invoice dihapus permanen.`);
       return uniqueIds.length;
     },
-    [authMode, currentUser, recordAudit, state.invoices]
+    [activeCompanyId, authMode, currentUser, recordAudit, state.invoices]
   );
 
   const bulkMarkNotificationsRead = useCallback(
@@ -5624,8 +5521,8 @@ export function useErpController() {
       for (const n of toMark) {
         const readBy = Array.from(new Set([...(n.readBy || []), currentUser.uid]));
         updatedReadMap.set(n.id, readBy);
-        if (authMode === 'firebase') {
-          await markNotificationReadInFirestore(n.id, readBy);
+        if (authMode === 'supabase' && activeCompanyId) {
+          await markNotificationReadInSupabase(n.id, readBy, activeCompanyId);
         }
       }
       setState((prev) => ({
@@ -5637,7 +5534,7 @@ export function useErpController() {
       toast.success(`${toMark.length} notifikasi ditandai sudah dibaca.`);
       return toMark.length;
     },
-    [authMode, currentUser, state.notifications]
+    [activeCompanyId, authMode, currentUser, state.notifications]
   );
 
   const bulkDeleteNotifications = useCallback(
@@ -5655,16 +5552,17 @@ export function useErpController() {
       toast.error('Hanya Direktur yang berhak mengosongkan seluruh database.');
       return false;
     }
+    const targetCompanyId = activeCompanyId || state.settings.id || 'company';
     try {
-      if (authMode === 'firebase') {
-        await resetTotalDatabaseInFirestore(currentUser.uid, state.settings);
+      if (authMode === 'supabase' && activeCompanyId) {
+        await resetTotalDatabaseInSupabase(activeCompanyId, currentUser.uid, state.settings);
       }
       setState((prev) => ({
         ...createEmptyErpState(),
         users: prev.users,
         settings: {
           ...prev.settings,
-          id: 'company',
+          id: targetCompanyId,
           initialSeedCompleted: true,
         },
       }));
@@ -5674,7 +5572,7 @@ export function useErpController() {
       toast.error(err instanceof Error ? err.message : 'Gagal mengosongkan database total.');
       return false;
     }
-  }, [authMode, currentUser, state.settings]);
+  }, [activeCompanyId, authMode, currentUser, state.settings]);
 
   return {
     authMode,
@@ -5683,9 +5581,11 @@ export function useErpController() {
     activeModule,
     setActiveModule: selectActiveModule,
     state,
-    firestoreError,
+    authError,
+    authInfo,
+    loginWithEmail,
+    registerWithEmail,
     loginWithGoogle,
-    loginWithGoogleRedirect,
     enterPreviewMode,
     switchPreviewRole,
     logout,

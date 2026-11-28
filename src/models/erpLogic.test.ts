@@ -23,8 +23,8 @@ import {
   findSeededDummyMasterTargets,
   findSeededDummyOrderTargets,
   formatCompactIdr,
-  formatFirebaseAuthErrorMessage,
   formatMonthKeyLabel,
+  formatSupabaseAuthErrorMessage,
   getAgingBucket,
   getCashBankAccounts,
   getEffectiveTaxRatePercent,
@@ -32,7 +32,6 @@ import {
   isCompanyPkp,
   isDateInClosedPeriod,
   isEmailRegistered,
-  isLikelyMobileUserAgent,
   isLowStockProduct,
   isSafeDocumentUrl,
   isServiceOrderItem,
@@ -46,7 +45,6 @@ import {
   resolvePeriodDateRange,
   resolveSupplierTermDays,
   sanitizeAuthProfileFields,
-  shouldFallbackToRedirectAuth,
   splitOrderSubtotalByService,
   summarizeAgingReport,
   validateBalancedJournalLines,
@@ -650,35 +648,18 @@ test('Auth profile field sanitization clamps long names/URLs and normalizes emai
   assert.equal(fallback.photoURL, 'https://example.com/avatar.png');
 });
 
-test('Firebase auth error formatter translates permission and popup codes into clear Indonesian messages', () => {
-  const permJson = JSON.stringify({
-    error: 'Missing or insufficient permissions.',
-    operationType: 'write',
-    path: 'users/abc',
-  });
-  assert.match(formatFirebaseAuthErrorMessage(new Error(permJson)), /Akses profil Firestore ditolak/);
+test('Supabase auth error formatter translates credentials, confirmation, and RLS errors into clear Indonesian messages', () => {
   assert.match(
-    formatFirebaseAuthErrorMessage(new Error('Firebase: Error (auth/popup-closed-by-user).')),
-    /Popup login Google ditutup/
+    formatSupabaseAuthErrorMessage(new Error('Invalid login credentials')),
+    /Email atau kata sandi salah/
   );
-});
-
-test('Mobile auth redirect fallback triggers only outside embedded iframes for popup-blocked environments', () => {
-  assert.equal(shouldFallbackToRedirectAuth({ code: 'auth/popup-blocked' }, false), true);
-  assert.equal(
-    shouldFallbackToRedirectAuth({ code: 'auth/operation-not-supported-in-this-environment' }, false),
-    true
+  assert.match(
+    formatSupabaseAuthErrorMessage(new Error('Email not confirmed')),
+    /belum dikonfirmasi/
   );
-  assert.equal(shouldFallbackToRedirectAuth({ code: 'auth/popup-blocked' }, true), false);
-  assert.equal(shouldFallbackToRedirectAuth({ code: 'auth/popup-closed-by-user' }, false), false);
-
-  assert.equal(
-    isLikelyMobileUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'),
-    true
-  );
-  assert.equal(
-    isLikelyMobileUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'),
-    false
+  assert.match(
+    formatSupabaseAuthErrorMessage(new Error('new row violates row-level security policy')),
+    /Row Level Security/
   );
 });
 

@@ -71,6 +71,8 @@ export const BLUEPRINT_CONSTRAINTS = {
 
 export interface UserProfile {
   uid: string;
+  authUserId?: string;
+  companyId?: string;
   email: string;
   displayName: string;
   role: UserRole;

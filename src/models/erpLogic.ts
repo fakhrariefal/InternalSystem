@@ -1921,55 +1921,30 @@ export function sanitizeAuthProfileFields(input: {
   return { emailLower, displayName, photoURL };
 }
 
-export function shouldFallbackToRedirectAuth(
-  err: unknown,
-  isEmbeddedIframe: boolean
-): boolean {
-  if (isEmbeddedIframe) return false;
-  const raw = err instanceof Error ? err.message : String(err || '');
-  const code =
-    err && typeof err === 'object' && 'code' in err
-      ? String((err as { code?: unknown }).code || '')
-      : '';
-  const combined = `${code} ${raw}`.toLowerCase();
-  return (
-    combined.includes('auth/popup-blocked') ||
-    combined.includes('auth/operation-not-supported-in-this-environment') ||
-    combined.includes('auth/web-storage-unsupported')
-  );
-}
-
-export function isLikelyMobileUserAgent(userAgent: string): boolean {
-  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent || '');
-}
-
-export function formatFirebaseAuthErrorMessage(err: unknown): string {
+export function formatSupabaseAuthErrorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err || '');
   if (!raw) return 'Gagal memverifikasi sesi login.';
-  if (raw.includes('auth/popup-closed-by-user') || raw.includes('auth/cancelled-popup-request')) {
-    return 'Popup login Google ditutup sebelum otentikasi selesai diterima. Di browser mobile, coba gunakan "Masuk via Redirect Halaman" atau buka di tab browser penuh.';
+  const lower = raw.toLowerCase();
+  if (lower.includes('invalid login credentials')) {
+    return 'Email atau kata sandi salah. Periksa kembali kredensial Anda.';
   }
-  if (raw.includes('auth/popup-blocked')) {
-    return 'Popup Google diblokir oleh browser mobile. Gunakan "Masuk via Redirect Halaman" atau izin kan popup.';
+  if (lower.includes('email not confirmed')) {
+    return 'Email Anda belum dikonfirmasi. Silakan cek kotak masuk email atau hubungi Direktur.';
   }
-  if (raw.includes('auth/operation-not-supported-in-this-environment') || raw.includes('auth/web-storage-unsupported')) {
-    return 'Browser/WebView membatasi penyimpanan popup. Buka portal di Chrome/Safari langsung atau gunakan "Masuk via Redirect Halaman".';
+  if (lower.includes('user already registered') || lower.includes('already been registered')) {
+    return 'Email ini sudah terdaftar. Silakan masuk menggunakan tab Login.';
   }
-  if (raw.includes('auth/network-request-failed') || raw.includes('the client is offline')) {
-    return 'Koneksi ke server otentikasi terputus. Periksa internet Anda lalu coba lagi.';
+  if (lower.includes('password should be at least')) {
+    return 'Kata sandi minimal 6 karakter.';
   }
-  if (raw.startsWith('{') && raw.includes('"error"')) {
-    try {
-      const parsed = JSON.parse(raw) as { error?: string; path?: string };
-      if (parsed.error) {
-        if (parsed.error.toLowerCase().includes('permission')) {
-          return `Akses profil Firestore ditolak (${parsed.path || 'users'}). Silakan hubungi Direktur atau coba masuk ulang.`;
-        }
-        return parsed.error;
-      }
-    } catch {
-      // fall through to raw message
-    }
+  if (lower.includes('rate limit') || lower.includes('too many requests')) {
+    return 'Terlalu banyak percobaan otentikasi. Tunggu beberapa saat lalu coba lagi.';
+  }
+  if (lower.includes('row-level security') || lower.includes('permission denied')) {
+    return 'Akses data ditolak oleh Row Level Security (RLS) Supabase. Pastikan profil & role Anda aktif.';
+  }
+  if (lower.includes('failed to fetch') || lower.includes('network') || lower.includes('fetcherror')) {
+    return 'Koneksi ke server Supabase terputus. Periksa koneksi internet Anda lalu coba lagi.';
   }
   return raw;
 }
